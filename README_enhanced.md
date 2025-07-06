@@ -6,8 +6,9 @@ An advanced tool that splits Excel files by reviewer, creates organized folder s
 
 - Creates application-specific folder structure
 - Splits Excel file by "Reviewer" column with filtered views
+- Automatically extracts email addresses from "Email Address" column (if available)
 - Copies Word documents and permission PDFs to each reviewer folder
-- Generates PowerShell script for SharePoint permissions
+- Generates PowerShell script for SharePoint permissions with pre-filled emails
 - Maintains Excel formatting with AutoFilter
 
 ## Installation
@@ -66,7 +67,8 @@ Run the generated PowerShell script:
 
 The script will:
 - Connect to your SharePoint site
-- Prompt for each reviewer's email address
+- Use email addresses from Excel file (if "Email Address" column exists)
+- Prompt for missing email addresses only
 - Grant "Edit" permissions to their respective folders
 
 ### 3. Manual Alternative
@@ -80,6 +82,7 @@ If you prefer manual sharing:
 ## Requirements
 
 - Excel file must contain a "Reviewer" column
+- (Optional) "Email Address" column for automatic SharePoint sharing
 - Word documents should be named: `<AppName>*.docx`
 - Permission PDFs should be named: `<AppName>*permission*.pdf`
 - PowerShell with PnP module for SharePoint sharing (optional)

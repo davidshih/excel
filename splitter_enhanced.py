@@ -49,7 +49,7 @@ def copy_documents(source_dir, dest_dir, app_name):
     return copied_files
 
 
-def create_sharepoint_sharing_script(base_dir, reviewers):
+def create_sharepoint_sharing_script(base_dir, reviewer_emails):
     script_path = os.path.join(base_dir, "share_folders.ps1")
     
     with open(script_path, 'w', encoding='utf-8') as f:
@@ -59,13 +59,22 @@ def create_sharepoint_sharing_script(base_dir, reviewers):
         f.write("$baseFolder = Read-Host 'Enter base folder path on SharePoint'\n\n")
         f.write("Connect-PnPOnline -Url $siteUrl -UseWebLogin\n\n")
         
-        for reviewer in reviewers:
-            reviewer_name = str(reviewer).strip()
+        for reviewer_name, email in reviewer_emails.items():
             f.write(f"# Share folder for {reviewer_name}\n")
             f.write(f"$folderPath = Join-Path $baseFolder '{reviewer_name}'\n")
-            f.write(f"$userEmail = Read-Host 'Enter email for {reviewer_name}'\n")
-            f.write(f"Set-PnPFolderPermission -List 'Documents' -Identity $folderPath -User $userEmail -AddRole 'Edit'\n")
-            f.write(f"Write-Host 'Shared folder for {reviewer_name} with Edit permissions'\n\n")
+            
+            if email and email != 'N/A':
+                f.write(f"$userEmail = '{email}'\n")
+                f.write(f"Write-Host 'Sharing with {reviewer_name} ({email})...'\n")
+            else:
+                f.write(f"$userEmail = Read-Host 'Enter email for {reviewer_name}'\n")
+            
+            f.write(f"try {{\n")
+            f.write(f"    Set-PnPFolderPermission -List 'Documents' -Identity $folderPath -User $userEmail -AddRole 'Edit'\n")
+            f.write(f"    Write-Host '✓ Shared folder for {reviewer_name} with Edit permissions' -ForegroundColor Green\n")
+            f.write(f"}} catch {{\n")
+            f.write(f"    Write-Host '✗ Failed to share with {reviewer_name}: $_' -ForegroundColor Red\n")
+            f.write(f"}}\n\n")
     
     return script_path
 
@@ -88,6 +97,22 @@ def split_excel_enhanced(file_path, app_name):
     
     reviewers = df['Reviewer'].dropna().unique().tolist()
     print(f"Found {len(reviewers)} reviewers: {', '.join(str(r) for r in reviewers)}")
+    
+    # Check for Email Address column and create mapping
+    reviewer_emails = {}
+    if 'Email Address' in df.columns:
+        print("✓ Found 'Email Address' column - will use for automatic sharing")
+        for reviewer in reviewers:
+            reviewer_data = df[df['Reviewer'] == reviewer]
+            if not reviewer_data.empty:
+                email = reviewer_data['Email Address'].iloc[0]
+                if pd.notna(email):
+                    reviewer_emails[str(reviewer).strip()] = str(email).strip()
+                else:
+                    reviewer_emails[str(reviewer).strip()] = 'N/A'
+    else:
+        print("ℹ No 'Email Address' column found - will prompt for emails during sharing")
+        reviewer_emails = {str(r).strip(): 'N/A' for r in reviewers}
     
     base_dir = os.path.dirname(file_path)
     app_folder = os.path.join(base_dir, app_name)
@@ -130,8 +155,17 @@ def split_excel_enhanced(file_path, app_name):
         finally:
             wb.close()
     
-    script_path = create_sharepoint_sharing_script(app_folder, reviewers)
+    script_path = create_sharepoint_sharing_script(app_folder, reviewer_emails)
     print(f"\n✓ Created SharePoint sharing script: {script_path}")
+    
+    # Display email mapping summary
+    if any(email != 'N/A' for email in reviewer_emails.values()):
+        print("\n📧 Email addresses found:")
+        for reviewer, email in reviewer_emails.items():
+            if email != 'N/A':
+                print(f"  • {reviewer}: {email}")
+            else:
+                print(f"  • {reviewer}: [No email - will be prompted]")
     
     print("\nProcessing complete!")
     print(f"All files have been created in: {app_folder}")
