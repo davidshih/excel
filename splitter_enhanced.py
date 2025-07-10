@@ -143,6 +143,12 @@ def split_excel_enhanced(file_path, app_name):
             
             ws.auto_filter.add_filter_column(reviewer_col - 1, [reviewer_name])
             
+            # 隱藏不屬於此 reviewer 的資料行
+            for row in range(2, max_row + 1):  # 從第2行開始（跳過標題）
+                cell_value = ws.cell(row=row, column=reviewer_col).value
+                if cell_value != reviewer_name:
+                    ws.row_dimensions[row].hidden = True
+            
             wb.save(dst_path)
             print(f"✓ Created filtered Excel for {reviewer_name}")
             
