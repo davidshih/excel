@@ -1,4 +1,0 @@
-TestApp Permission Form
-Sample Permission PDF
-This would be a .pdf file in real scenario.
-Contains permission forms for the application.
