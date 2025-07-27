@@ -1,0 +1,529 @@
+# SharePoint Folder Sharing Tool - Windows PowerShell 5.1 Compatible
+# Works with built-in Windows PowerShell (no PowerShell 7 needed!)
+# Edit the configuration section below, then run!
+
+# ========================================
+# CONFIGURATION - EDIT THIS SECTION
+# ========================================
+
+$Config = @{
+    # Your SharePoint site URL
+    SiteUrl = "https://your-company.sharepoint.com/sites/your-site"
+    
+    # Base folder path (where user folders are located)
+    FolderBasePath = "/sites/your-site/Shared Documents/share/"
+    
+    # Default permission level (Read, Contribute, Edit, Full Control)
+    DefaultPermission = "Contribute"
+    
+    # Auto-confirm shares (set to $true to skip confirmation)
+    AutoConfirm = $false
+    
+    # Delay between batch operations (seconds)
+    BatchDelay = 1
+}
+
+# User mapping (if folder name differs from email)
+$UserMapping = @{
+    # "FolderName" = "user.email@company.com"
+    # "John Doe" = "john.doe@company.com"
+    # "Project Alpha" = "alpha-team@company.com"
+}
+
+# Common folders for quick access
+$CommonFolders = @(
+    # "John Doe"
+    # "Jane Smith"
+    # "Team Resources"
+)
+
+# ========================================
+# MAIN SCRIPT - DO NOT EDIT BELOW
+# ========================================
+
+$ErrorActionPreference = "Continue"
+$script:Connected = $false
+$script:AuthToken = $null
+$script:SiteId = $null
+
+# Functions
+function Write-ColorOutput {
+    param([string]$Message, [string]$Color = "White")
+    Write-Host $Message -ForegroundColor $Color
+}
+
+function Get-GraphToken {
+    Write-ColorOutput "`nAuthenticating with Microsoft Graph..." "Yellow"
+    Write-ColorOutput "A browser window will open for sign-in (SSO + MFA supported)" "Gray"
+    
+    # Using device code flow for authentication
+    $clientId = "d3590ed6-52b3-4102-aeff-aad2292ab01c" # Microsoft Office
+    $tenant = "common"
+    $resource = "https://graph.microsoft.com"
+    
+    # Get device code
+    $deviceCodeUrl = "https://login.microsoftonline.com/$tenant/oauth2/v2.0/devicecode"
+    $body = @{
+        client_id = $clientId
+        scope = "https://graph.microsoft.com/.default offline_access"
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Method Post -Uri $deviceCodeUrl -Body $body
+        
+        Write-Host "`n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+        Write-Host "To sign in, use a web browser to open the page: " -NoNewline
+        Write-Host $response.verification_uri -ForegroundColor Yellow
+        Write-Host "Enter the code: " -NoNewline
+        Write-Host $response.user_code -ForegroundColor Yellow
+        Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+        
+        # Open browser
+        Start-Process $response.verification_uri
+        
+        # Poll for token
+        $tokenUrl = "https://login.microsoftonline.com/$tenant/oauth2/v2.0/token"
+        $interval = $response.interval
+        if (-not $interval) { $interval = 5 }
+        
+        Write-Host "`nWaiting for authentication..." -ForegroundColor Gray
+        
+        while ($true) {
+            Start-Sleep -Seconds $interval
+            
+            $tokenBody = @{
+                grant_type = "urn:ietf:params:oauth:grant-type:device_code"
+                client_id = $clientId
+                device_code = $response.device_code
+            }
+            
+            try {
+                $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -Body $tokenBody -ErrorAction Stop
+                $script:AuthToken = $tokenResponse.access_token
+                Write-ColorOutput "Authentication successful!" "Green"
+                return $true
+            }
+            catch {
+                $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($errorDetails.error -eq "authorization_pending") {
+                    # Still waiting for user
+                    Write-Host "." -NoNewline
+                }
+                elseif ($errorDetails.error -eq "authorization_declined") {
+                    Write-ColorOutput "`nAuthentication was declined" "Red"
+                    return $false
+                }
+                elseif ($errorDetails.error -eq "expired_token") {
+                    Write-ColorOutput "`nThe code has expired. Please try again." "Red"
+                    return $false
+                }
+                else {
+                    # Continue waiting for other errors
+                    Write-Host "." -NoNewline
+                }
+            }
+        }
+    }
+    catch {
+        Write-ColorOutput "Failed to authenticate: $_" "Red"
+        return $false
+    }
+}
+
+function Get-SharePointSiteId {
+    if ($script:SiteId) { return $script:SiteId }
+    
+    Write-ColorOutput "Getting SharePoint site information..." "Gray"
+    
+    # Parse site URL
+    $uri = [System.Uri]$Config.SiteUrl
+    $hostname = $uri.Host
+    $sitePath = $uri.AbsolutePath
+    
+    # Remove /sites/ prefix if present
+    if ($sitePath -like "/sites/*") {
+        $siteName = $sitePath.Substring(7).TrimEnd('/')
+    }
+    else {
+        $siteName = $sitePath.TrimStart('/').TrimEnd('/')
+    }
+    
+    $graphUrl = "https://graph.microsoft.com/v1.0/sites/${hostname}:/sites/${siteName}"
+    
+    $headers = @{
+        Authorization = "Bearer $($script:AuthToken)"
+        Accept = "application/json"
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri $graphUrl -Headers $headers -Method Get
+        $script:SiteId = $response.id
+        Write-ColorOutput "Connected to site: $($response.displayName)" "Green"
+        return $script:SiteId
+    }
+    catch {
+        Write-ColorOutput "Failed to get site information: $_" "Red"
+        return $null
+    }
+}
+
+function Get-DriveId {
+    $siteId = Get-SharePointSiteId
+    if (-not $siteId) { return $null }
+    
+    $graphUrl = "https://graph.microsoft.com/v1.0/sites/$siteId/drive"
+    
+    $headers = @{
+        Authorization = "Bearer $($script:AuthToken)"
+        Accept = "application/json"
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri $graphUrl -Headers $headers -Method Get
+        return $response.id
+    }
+    catch {
+        Write-ColorOutput "Failed to get drive information: $_" "Red"
+        return $null
+    }
+}
+
+function Find-User {
+    param([string]$DisplayName)
+    
+    Write-ColorOutput "`nSearching for user: $DisplayName" "Cyan"
+    
+    # Check user mapping first
+    if ($UserMapping.ContainsKey($DisplayName)) {
+        $email = $UserMapping[$DisplayName]
+        Write-ColorOutput "Using mapped email: $email" "Gray"
+        return @{ Email = $email; DisplayName = $DisplayName }
+    }
+    
+    # Search using Graph API
+    $searchUrl = "https://graph.microsoft.com/v1.0/users?`$filter=startswith(displayName,'$DisplayName') or startswith(mail,'$DisplayName')"
+    
+    $headers = @{
+        Authorization = "Bearer $($script:AuthToken)"
+        Accept = "application/json"
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri $searchUrl -Headers $headers -Method Get
+        $users = $response.value | Where-Object { $_.mail -and $_.displayName -notlike "*System*" }
+        
+        if ($users.Count -eq 0) {
+            Write-ColorOutput "No users found" "Red"
+            return $null
+        }
+        elseif ($users.Count -eq 1) {
+            Write-ColorOutput "Found user: $($users[0].displayName) ($($users[0].mail))" "Green"
+            return @{ Email = $users[0].mail; DisplayName = $users[0].displayName; Id = $users[0].id }
+        }
+        else {
+            Write-ColorOutput "Multiple users found:" "Yellow"
+            for ($i = 0; $i -lt $users.Count; $i++) {
+                Write-Host "  $($i+1). $($users[$i].displayName) - $($users[$i].mail)"
+            }
+            
+            $choice = Read-Host "`nSelect user number"
+            if ($choice -match '^\d+$' -and [int]$choice -le $users.Count) {
+                $selected = $users[[int]$choice - 1]
+                return @{ Email = $selected.mail; DisplayName = $selected.displayName; Id = $selected.id }
+            }
+        }
+    }
+    catch {
+        Write-ColorOutput "Search error: $_" "Red"
+    }
+    
+    return $null
+}
+
+function Share-Folder {
+    param(
+        [string]$FolderName,
+        [string]$Permission = $Config.DefaultPermission
+    )
+    
+    Write-ColorOutput "`nProcessing folder: $FolderName" "Yellow"
+    
+    $driveId = Get-DriveId
+    if (-not $driveId) { return $false }
+    
+    # Find user
+    $user = Find-User -DisplayName $FolderName
+    
+    if (-not $user) {
+        $email = Read-Host "`nUser not found. Enter email manually (or press Enter to skip)"
+        if ($email) {
+            $user = @{ Email = $email; DisplayName = $email }
+        }
+        else {
+            return $false
+        }
+    }
+    
+    # Confirm share
+    if (-not $Config.AutoConfirm) {
+        $confirm = Read-Host "`nShare with $($user.DisplayName)? (Y/n)"
+        if ($confirm -eq 'n') {
+            Write-ColorOutput "Cancelled" "Yellow"
+            return $false
+        }
+    }
+    
+    # Share folder using Graph API
+    try {
+        Write-ColorOutput "Sharing folder..." "Gray"
+        
+        # Build folder path
+        $folderPath = $Config.FolderBasePath.TrimEnd('/') + '/' + $FolderName
+        
+        # Create sharing invitation
+        $shareUrl = "https://graph.microsoft.com/v1.0/sites/$($script:SiteId)/drive/root:${folderPath}:/invite"
+        
+        $body = @{
+            requireSignIn = $true
+            sendInvitation = $true
+            roles = @($(if ($Permission -eq "Read") { "read" } else { "write" }))
+            recipients = @(
+                @{
+                    email = $user.Email
+                }
+            )
+            message = "You have been granted access to the folder: $FolderName"
+        } | ConvertTo-Json -Depth 10
+        
+        $headers = @{
+            Authorization = "Bearer $($script:AuthToken)"
+            "Content-Type" = "application/json"
+            Accept = "application/json"
+        }
+        
+        $response = Invoke-RestMethod -Uri $shareUrl -Headers $headers -Method Post -Body $body
+        
+        Write-ColorOutput "Successfully shared with: $($user.DisplayName)" "Green"
+        Write-ColorOutput "Permission: $Permission" "Gray"
+        
+        if ($Config.BatchDelay -gt 0) {
+            Start-Sleep -Seconds $Config.BatchDelay
+        }
+        
+        return $true
+    }
+    catch {
+        Write-ColorOutput "Failed to share: $_" "Red"
+        
+        # Try to parse error details
+        try {
+            $errorDetails = $_.ErrorDetails.Message | ConvertFrom-Json
+            if ($errorDetails.error.message) {
+                Write-ColorOutput "Error details: $($errorDetails.error.message)" "Red"
+            }
+        }
+        catch {}
+        
+        return $false
+    }
+}
+
+function Show-Menu {
+    Clear-Host
+    Write-ColorOutput "SharePoint Folder Sharing Tool (Windows PowerShell 5.1)" "Cyan"
+    Write-ColorOutput ("=" * 70) "Gray"
+    Write-ColorOutput "Site: $($Config.SiteUrl)" "Gray"
+    Write-ColorOutput "Path: $($Config.FolderBasePath)" "Gray"
+    Write-ColorOutput ("=" * 70) "Gray"
+    
+    Write-Host "`nOptions:"
+    Write-Host "  1. Share single folder"
+    Write-Host "  2. Batch share from file"
+    Write-Host "  3. Batch share (manual input)"
+    
+    if ($CommonFolders.Count -gt 0) {
+        Write-Host "  4. Quick share (common folders)"
+    }
+    
+    Write-Host "  5. Test connection"
+    Write-Host "  Q. Quit"
+    
+    return Read-Host "`nSelect option"
+}
+
+function Process-Batch {
+    param([string[]]$FolderNames)
+    
+    Write-ColorOutput "`nBatch processing $($FolderNames.Count) folders..." "Cyan"
+    Write-ColorOutput ("=" * 50) "Gray"
+    
+    $success = 0
+    $failed = @()
+    
+    for ($i = 0; $i -lt $FolderNames.Count; $i++) {
+        Write-ColorOutput "`n[$($i+1)/$($FolderNames.Count)]" "Yellow"
+        
+        if (Share-Folder -FolderName $FolderNames[$i].Trim()) {
+            $success++
+        }
+        else {
+            $failed += $FolderNames[$i]
+        }
+    }
+    
+    Write-ColorOutput "`nResults:" "Cyan"
+    Write-ColorOutput "Success: $success/$($FolderNames.Count)" "Green"
+    
+    if ($failed.Count -gt 0) {
+        Write-ColorOutput "`nFailed folders:" "Red"
+        $failed | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    }
+}
+
+function Initialize-Connection {
+    if ($script:AuthToken) { return $true }
+    
+    # Check PowerShell version
+    Write-ColorOutput "PowerShell version: $($PSVersionTable.PSVersion)" "Gray"
+    
+    # Get authentication token
+    if (-not (Get-GraphToken)) {
+        Write-ColorOutput "Failed to authenticate. Please try again." "Red"
+        return $false
+    }
+    
+    # Verify site access
+    if (-not (Get-SharePointSiteId)) {
+        Write-ColorOutput "Failed to access SharePoint site. Check your URL and permissions." "Red"
+        return $false
+    }
+    
+    return $true
+}
+
+# Main execution
+Clear-Host
+
+# Check configuration
+if ($Config.SiteUrl -eq "https://your-company.sharepoint.com/sites/your-site") {
+    Write-ColorOutput "ERROR: Please edit the configuration section in this script!" "Red"
+    Write-ColorOutput "Update these values:" "Yellow"
+    Write-ColorOutput "  - SiteUrl: Your SharePoint site URL" "Gray"
+    Write-ColorOutput "  - FolderBasePath: Your folder path" "Gray"
+    exit 1
+}
+
+# Set TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Handle command line arguments
+if ($args.Count -gt 0) {
+    if (-not (Initialize-Connection)) { exit 1 }
+    
+    switch ($args[0].ToLower()) {
+        "share" {
+            if ($args.Count -ge 2) {
+                Share-Folder -FolderName $args[1]
+            }
+            else {
+                Write-ColorOutput "Usage: .\SharePoint_Share_AllInOne.ps1 share <FolderName>" "Yellow"
+            }
+        }
+        "batch" {
+            if ($args.Count -ge 2 -and (Test-Path $args[1])) {
+                $folders = Get-Content $args[1] | Where-Object { $_.Trim() }
+                Process-Batch -FolderNames $folders
+            }
+            else {
+                Write-ColorOutput "Usage: .\SharePoint_Share_AllInOne.ps1 batch <FilePath>" "Yellow"
+            }
+        }
+        default {
+            Write-ColorOutput "Unknown command: $($args[0])" "Red"
+        }
+    }
+    exit
+}
+
+# Interactive mode
+if (-not (Initialize-Connection)) { exit 1 }
+
+while ($true) {
+    $choice = Show-Menu
+    
+    switch ($choice.ToUpper()) {
+        "1" {
+            $folderName = Read-Host "`nEnter folder name"
+            if ($folderName) {
+                Share-Folder -FolderName $folderName
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "2" {
+            $filePath = Read-Host "`nEnter file path (one folder name per line)"
+            if (Test-Path $filePath) {
+                $folders = Get-Content $filePath | Where-Object { $_.Trim() }
+                Process-Batch -FolderNames $folders
+            }
+            else {
+                Write-ColorOutput "File not found" "Red"
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "3" {
+            Write-Host "`nEnter folder names (one per line, empty line to finish):"
+            $folders = @()
+            while ($true) {
+                $input = Read-Host
+                if ([string]::IsNullOrWhiteSpace($input)) { break }
+                $folders += $input
+            }
+            if ($folders.Count -gt 0) {
+                Process-Batch -FolderNames $folders
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "4" {
+            if ($CommonFolders.Count -gt 0) {
+                Write-Host "`nCommon folders:"
+                for ($i = 0; $i -lt $CommonFolders.Count; $i++) {
+                    Write-Host "  $($i+1). $($CommonFolders[$i])"
+                }
+                $choice = Read-Host "`nSelect folder number"
+                if ($choice -match '^\d+$') {
+                    $index = [int]$choice - 1
+                    if ($index -ge 0 -and $index -lt $CommonFolders.Count) {
+                        Share-Folder -FolderName $CommonFolders[$index]
+                    }
+                }
+                Read-Host "`nPress Enter to continue"
+            }
+        }
+        "5" {
+            try {
+                $testUrl = "https://graph.microsoft.com/v1.0/sites/$($script:SiteId)"
+                $headers = @{
+                    Authorization = "Bearer $($script:AuthToken)"
+                    Accept = "application/json"
+                }
+                $site = Invoke-RestMethod -Uri $testUrl -Headers $headers -Method Get
+                
+                Write-ColorOutput "`nConnection OK!" "Green"
+                Write-ColorOutput "Site Name: $($site.displayName)" "Gray"
+                Write-ColorOutput "Site ID: $($site.id)" "Gray"
+            }
+            catch {
+                Write-ColorOutput "Connection test failed: $_" "Red"
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "Q" {
+            Write-ColorOutput "`nGoodbye!" "Cyan"
+            break
+        }
+        default {
+            Write-ColorOutput "Invalid option" "Red"
+            Start-Sleep -Seconds 1
+        }
+    }
+}
