@@ -1,0 +1,486 @@
+# SharePoint 資料夾分享工具 (PowerShell 版)
+# 不需要管理員權限！支援 SSO + MFA！
+# 就像用員工證刷卡進公司一樣簡單！
+
+# ===== 載入設定檔 =====
+$configPath = Join-Path $PSScriptRoot "SharePoint_Config.ps1"
+if (Test-Path $configPath) {
+    . $configPath
+} else {
+    Write-Host "❌ 找不到設定檔：SharePoint_Config.ps1" -ForegroundColor Red
+    Write-Host "   請確認檔案存在於相同目錄" -ForegroundColor Yellow
+    exit 1
+}
+
+# 從設定檔取得值
+$SiteUrl = $Global:SharePointConfig.SiteUrl
+$FolderBasePath = $Global:SharePointConfig.FolderBasePath
+$LogFile = $Global:SharePointConfig.LogFile
+
+# ===== 函式區域 =====
+
+function Write-ColorOutput {
+    param(
+        [string]$Message,
+        [string]$Color = "White"
+    )
+    Write-Host $Message -ForegroundColor $Color
+    Add-Content -Path $LogFile -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $Message"
+}
+
+function Connect-ToSharePoint {
+    param(
+        [string]$Url
+    )
+    
+    Write-ColorOutput "🔐 連接到 SharePoint..." "Yellow"
+    Write-ColorOutput "   支援 SSO 和 MFA！" "Gray"
+    
+    try {
+        # 檢查是否已安裝 PnP PowerShell
+        if (!(Get-Module -ListAvailable -Name "PnP.PowerShell")) {
+            Write-ColorOutput "📦 需要安裝 PnP PowerShell 模組..." "Yellow"
+            Write-ColorOutput "   這不需要管理員權限！" "Gray"
+            
+            # 先設定 PSGallery 為信任的來源
+            try {
+                Set-PSRepository -Name 'PSGallery' -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-ColorOutput "   無法設定 PSGallery（沒關係，繼續安裝）" "Gray"
+            }
+            
+            # 安裝到使用者範圍（不需要管理員）
+            try {
+                Install-Module -Name "PnP.PowerShell" -Scope CurrentUser -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
+                Write-ColorOutput "✅ 模組安裝完成！" "Green"
+            }
+            catch {
+                Write-ColorOutput "   標準安裝失敗，嘗試其他方法..." "Yellow"
+                
+                # 方法 2: 使用 -Repository 參數
+                try {
+                    Install-Module -Name "PnP.PowerShell" -Repository PSGallery -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+                    Write-ColorOutput "✅ 模組安裝完成！" "Green"
+                }
+                catch {
+                    Write-ColorOutput "   ⚠️  自動安裝失敗，請手動安裝：" "Yellow"
+                    Write-ColorOutput "   1. 開啟 PowerShell (不需要管理員)" "Gray"
+                    Write-ColorOutput "   2. 執行: Install-Module -Name PnP.PowerShell -Scope CurrentUser -Force -AllowClobber" "Gray"
+                    Write-ColorOutput "   3. 如果出現提示，選擇 [Y] 或 [A]" "Gray"
+                    Read-Host "`n   完成後按 Enter 繼續"
+                }
+            }
+        }
+        
+        # 匯入模組
+        Import-Module PnP.PowerShell -ErrorAction Stop
+        
+        # 連接（會開啟瀏覽器進行 SSO + MFA）
+        Connect-PnPOnline -Url $Url -Interactive
+        
+        Write-ColorOutput "✅ 成功連接到 SharePoint！" "Green"
+        return $true
+    }
+    catch {
+        Write-ColorOutput "❌ 連接失敗：$($_.Exception.Message)" "Red"
+        return $false
+    }
+}
+
+function Find-SharePointUser {
+    param(
+        [string]$DisplayName
+    )
+    
+    Write-ColorOutput "`n🔍 搜尋使用者：$DisplayName" "Cyan"
+    
+    try {
+        # 取得所有使用者
+        $users = Get-PnPUser | Where-Object { 
+            $_.Title -like "*$DisplayName*" -or 
+            $_.Email -like "*$DisplayName*" 
+        }
+        
+        if ($users.Count -eq 0) {
+            Write-ColorOutput "   ❌ 找不到使用者" "Red"
+            return $null
+        }
+        elseif ($users.Count -eq 1) {
+            Write-ColorOutput "   ✅ 找到使用者：$($users[0].Title) ($($users[0].Email))" "Green"
+            return $users[0]
+        }
+        else {
+            Write-ColorOutput "   找到多個使用者：" "Yellow"
+            $i = 1
+            foreach ($user in $users) {
+                Write-Host "     $i. $($user.Title) - $($user.Email)"
+                $i++
+            }
+            
+            $choice = Read-Host "`n   請選擇 (輸入編號)"
+            if ($choice -match '^\d+$' -and [int]$choice -le $users.Count) {
+                return $users[[int]$choice - 1]
+            }
+            else {
+                Write-ColorOutput "   ❌ 無效的選擇" "Red"
+                return $null
+            }
+        }
+    }
+    catch {
+        Write-ColorOutput "   ❌ 搜尋錯誤：$($_.Exception.Message)" "Red"
+        return $null
+    }
+}
+
+function Share-SingleFolder {
+    param(
+        [string]$FolderPath,
+        [string]$FolderName,
+        [string]$Permission = $Global:SharePointConfig.DefaultPermission
+    )
+    
+    Write-ColorOutput "`n📁 處理資料夾：$FolderName" "Yellow"
+    
+    $fullPath = $FolderPath + $FolderName
+    Write-ColorOutput "   路徑：$fullPath" "Gray"
+    
+    # 檢查使用者對應
+    $targetUser = $null
+    if ($Global:UserMapping.ContainsKey($FolderName)) {
+        $mappedEmail = $Global:UserMapping[$FolderName]
+        Write-ColorOutput "   使用對應設定：$mappedEmail" "Cyan"
+        try {
+            $targetUser = Get-PnPUser | Where-Object { $_.Email -eq $mappedEmail }
+            if ($targetUser) {
+                Write-ColorOutput "   ✅ 找到對應使用者：$($targetUser.Title)" "Green"
+            }
+        }
+        catch {
+            Write-ColorOutput "   ❌ 找不到對應的使用者" "Red"
+        }
+    }
+    
+    # 如果沒有對應或找不到，使用原本的搜尋
+    if (-not $targetUser) {
+        # 尋找同名使用者
+        $user = Find-SharePointUser -DisplayName $FolderName
+        
+        if (-not $user) {
+            # 手動輸入
+            Write-Host "`n💡 找不到同名使用者" -ForegroundColor Yellow
+            $email = Read-Host "   請輸入使用者 email (或按 Enter 跳過)"
+            
+            if ($email) {
+                try {
+                    $user = Get-PnPUser | Where-Object { $_.Email -eq $email }
+                    if (-not $user) {
+                        Write-ColorOutput "   ❌ 找不到此 email 的使用者" "Red"
+                        return $false
+                    }
+                }
+                catch {
+                    Write-ColorOutput "   ❌ 錯誤：$($_.Exception.Message)" "Red"
+                    return $false
+                }
+            }
+            else {
+                return $false
+            }
+        }
+        $targetUser = $user
+    }
+    
+    # 確認分享（除非設定自動確認）
+    if (-not $Global:SharePointConfig.AutoConfirm) {
+        $confirm = Read-Host "`n確定要分享給 $($targetUser.Title) 嗎？(Y/n)"
+        if ($confirm -eq 'n') {
+            Write-ColorOutput "   已取消分享" "Yellow"
+            return $false
+        }
+    }
+    
+    # 分享資料夾
+    try {
+        Write-ColorOutput "   📤 分享中..." "Gray"
+        
+        # 方法 1: 使用 Set-PnPFolderPermission
+        Set-PnPFolderPermission -List "Documents" -Identity $fullPath `
+            -User $targetUser.LoginName -AddRole $Permission -ErrorAction Stop
+        
+        Write-ColorOutput "   ✅ 成功分享給：$($targetUser.Title)" "Green"
+        Write-ColorOutput "   權限：$Permission" "Gray"
+        
+        # 批次處理延遲
+        if ($Global:SharePointConfig.BatchDelay -gt 0) {
+            Start-Sleep -Seconds $Global:SharePointConfig.BatchDelay
+        }
+        
+        return $true
+    }
+    catch {
+        # 如果方法 1 失敗，嘗試方法 2
+        try {
+            Write-ColorOutput "   嘗試替代方法..." "Yellow"
+            
+            # 取得資料夾項目
+            $folder = Get-PnPFolder -Url $fullPath -Includes ListItemAllFields
+            $listItem = $folder.ListItemAllFields
+            
+            # 指派權限
+            Set-PnPListItemPermission -List "Documents" -Identity $listItem.Id `
+                -User $user.LoginName -AddRole $Permission
+            
+            Write-ColorOutput "   ✅ 成功分享給：$($user.Title)" "Green"
+            return $true
+        }
+        catch {
+            Write-ColorOutput "   ❌ 分享失敗：$($_.Exception.Message)" "Red"
+            return $false
+        }
+    }
+}
+
+function Start-BatchShare {
+    param(
+        [string[]]$FolderNames
+    )
+    
+    Write-ColorOutput "`n📦 批次分享模式" "Cyan"
+    Write-ColorOutput "   準備處理 $($FolderNames.Count) 個資料夾" "Gray"
+    Write-ColorOutput ("=" * 50) "Gray"
+    
+    $successCount = 0
+    $failedFolders = @()
+    
+    for ($i = 0; $i -lt $FolderNames.Count; $i++) {
+        $folderName = $FolderNames[$i]
+        Write-ColorOutput "`n[$($i+1)/$($FolderNames.Count)] 處理中..." "Yellow"
+        
+        if (Share-SingleFolder -FolderPath $FolderBasePath -FolderName $folderName) {
+            $successCount++
+        }
+        else {
+            $failedFolders += $folderName
+        }
+    }
+    
+    # 顯示結果
+    Write-ColorOutput "`n" "White"
+    Write-ColorOutput ("=" * 50) "Gray"
+    Write-ColorOutput "📊 批次處理結果：" "Cyan"
+    Write-ColorOutput "   成功：$successCount/$($FolderNames.Count)" "Green"
+    
+    if ($failedFolders.Count -gt 0) {
+        Write-ColorOutput "`n❌ 失敗的項目：" "Red"
+        foreach ($folder in $failedFolders) {
+            Write-ColorOutput "   - $folder" "Red"
+        }
+    }
+    
+    Write-ColorOutput "`n✅ 處理完成！" "Green"
+}
+
+function Start-InteractiveMode {
+    Write-ColorOutput "🎯 SharePoint 資料夾分享工具 (互動模式)" "Cyan"
+    Write-ColorOutput ("=" * 50) "Gray"
+    Write-ColorOutput "網站: $SiteUrl" "Gray"
+    Write-ColorOutput "路徑: $FolderBasePath" "Gray"
+    Write-ColorOutput ("=" * 50) "Gray"
+    
+    # 連接到 SharePoint
+    if (-not (Connect-ToSharePoint -Url $SiteUrl)) {
+        return
+    }
+    
+    while ($true) {
+        Write-Host "`n" -NoNewline
+        Write-ColorOutput "選擇操作模式：" "Yellow"
+        Write-Host "  1. 單一資料夾分享"
+        Write-Host "  2. 批次分享 (從檔案讀取)"
+        Write-Host "  3. 批次分享 (手動輸入)"
+        Write-Host "  4. 測試連線"
+        
+        # 如果有設定常用資料夾，顯示快速選項
+        if ($Global:CommonFolders.Count -gt 0) {
+            Write-Host "  5. 快速分享 (常用資料夾)"
+        }
+        
+        Write-Host "  Q. 結束"
+        
+        $choice = Read-Host "`n請選擇"
+        
+        switch ($choice.ToUpper()) {
+            "1" {
+                $folderName = Read-Host "`n請輸入資料夾名稱"
+                if ($folderName) {
+                    Share-SingleFolder -FolderPath $FolderBasePath -FolderName $folderName
+                }
+            }
+            "2" {
+                $filePath = Read-Host "`n請輸入檔案路徑 (預設: $($Global:AdvancedConfig.DefaultBatchFile))"
+                if ([string]::IsNullOrWhiteSpace($filePath)) {
+                    $filePath = $Global:AdvancedConfig.DefaultBatchFile
+                }
+                
+                if (Test-Path $filePath) {
+                    $folders = Get-Content $filePath | Where-Object { $_.Trim() -ne "" }
+                    Start-BatchShare -FolderNames $folders
+                }
+                else {
+                    Write-ColorOutput "❌ 找不到檔案: $filePath" "Red"
+                }
+            }
+            "3" {
+                Write-Host "`n請輸入資料夾名稱 (每行一個，輸入空行結束)："
+                $folders = @()
+                while ($true) {
+                    $input = Read-Host
+                    if ([string]::IsNullOrWhiteSpace($input)) {
+                        break
+                    }
+                    $folders += $input
+                }
+                if ($folders.Count -gt 0) {
+                    Start-BatchShare -FolderNames $folders
+                }
+            }
+            "4" {
+                try {
+                    $web = Get-PnPWeb
+                    Write-ColorOutput "`n✅ 連線正常！" "Green"
+                    Write-ColorOutput "   網站標題：$($web.Title)" "Gray"
+                    Write-ColorOutput "   網址：$($web.Url)" "Gray"
+                }
+                catch {
+                    Write-ColorOutput "❌ 連線測試失敗" "Red"
+                }
+            }
+            "5" {
+                if ($Global:CommonFolders.Count -gt 0) {
+                    Write-Host "`n常用資料夾："
+                    for ($i = 0; $i -lt $Global:CommonFolders.Count; $i++) {
+                        Write-Host "  $($i+1). $($Global:CommonFolders[$i])"
+                    }
+                    $folderChoice = Read-Host "`n選擇資料夾編號"
+                    if ($folderChoice -match '^\d+
+
+# ===== 主程式 =====
+
+Clear-Host
+Write-ColorOutput @"
+╔══════════════════════════════════════════════════╗
+║     SharePoint 資料夾分享工具 (PowerShell)      ║
+║         支援 SSO + MFA，不需管理員權限！         ║
+╚══════════════════════════════════════════════════╝
+"@ "Cyan"
+
+# 檢查參數
+if ($args.Count -eq 0) {
+    # 互動模式
+    Start-InteractiveMode
+}
+else {
+    # 命令列模式
+    $operation = $args[0]
+    
+    switch ($operation.ToLower()) {
+        "share" {
+            if ($args.Count -ge 2) {
+                Connect-ToSharePoint -Url $SiteUrl
+                Share-SingleFolder -FolderPath $FolderBasePath -FolderName $args[1]
+            }
+            else {
+                Write-ColorOutput "用法: .\SharePoint_Folder_Share.ps1 share <資料夾名稱>" "Yellow"
+            }
+        }
+        "batch" {
+            if ($args.Count -ge 2 -and (Test-Path $args[1])) {
+                Connect-ToSharePoint -Url $SiteUrl
+                $folders = Get-Content $args[1] | Where-Object { $_.Trim() -ne "" }
+                Start-BatchShare -FolderNames $folders
+            }
+            else {
+                Write-ColorOutput "用法: .\SharePoint_Folder_Share.ps1 batch <檔案路徑>" "Yellow"
+            }
+        }
+        default {
+            Write-ColorOutput "可用指令：" "Yellow"
+            Write-ColorOutput "  互動模式: .\SharePoint_Folder_Share.ps1" "Gray"
+            Write-ColorOutput "  單一分享: .\SharePoint_Folder_Share.ps1 share <資料夾名稱>" "Gray"
+            Write-ColorOutput "  批次分享: .\SharePoint_Folder_Share.ps1 batch <檔案路徑>" "Gray"
+        }
+    }
+}
+
+# 記錄結束
+Write-ColorOutput "`n執行完成於: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" "Gray") {
+                        $index = [int]$folderChoice - 1
+                        if ($index -ge 0 -and $index -lt $Global:CommonFolders.Count) {
+                            Share-SingleFolder -FolderPath $FolderBasePath -FolderName $Global:CommonFolders[$index]
+                        }
+                    }
+                }
+            }
+            "Q" {
+                Write-ColorOutput "`n👋 感謝使用！" "Cyan"
+                break
+            }
+            default {
+                Write-ColorOutput "❌ 無效的選擇" "Red"
+            }
+        }
+    }
+}
+
+# ===== 主程式 =====
+
+Clear-Host
+Write-ColorOutput @"
+╔══════════════════════════════════════════════════╗
+║     SharePoint 資料夾分享工具 (PowerShell)      ║
+║         支援 SSO + MFA，不需管理員權限！         ║
+╚══════════════════════════════════════════════════╝
+"@ "Cyan"
+
+# 檢查參數
+if ($args.Count -eq 0) {
+    # 互動模式
+    Start-InteractiveMode
+}
+else {
+    # 命令列模式
+    $operation = $args[0]
+    
+    switch ($operation.ToLower()) {
+        "share" {
+            if ($args.Count -ge 2) {
+                Connect-ToSharePoint -Url $SiteUrl
+                Share-SingleFolder -FolderPath $FolderBasePath -FolderName $args[1]
+            }
+            else {
+                Write-ColorOutput "用法: .\SharePoint_Folder_Share.ps1 share <資料夾名稱>" "Yellow"
+            }
+        }
+        "batch" {
+            if ($args.Count -ge 2 -and (Test-Path $args[1])) {
+                Connect-ToSharePoint -Url $SiteUrl
+                $folders = Get-Content $args[1] | Where-Object { $_.Trim() -ne "" }
+                Start-BatchShare -FolderNames $folders
+            }
+            else {
+                Write-ColorOutput "用法: .\SharePoint_Folder_Share.ps1 batch <檔案路徑>" "Yellow"
+            }
+        }
+        default {
+            Write-ColorOutput "可用指令：" "Yellow"
+            Write-ColorOutput "  互動模式: .\SharePoint_Folder_Share.ps1" "Gray"
+            Write-ColorOutput "  單一分享: .\SharePoint_Folder_Share.ps1 share <資料夾名稱>" "Gray"
+            Write-ColorOutput "  批次分享: .\SharePoint_Folder_Share.ps1 batch <檔案路徑>" "Gray"
+        }
+    }
+}
+
+# 記錄結束
+Write-ColorOutput "`n執行完成於: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" "Gray"
