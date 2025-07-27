@@ -1,0 +1,412 @@
+# SharePoint Folder Sharing Tool - All-in-One Version
+# No admin rights needed! Supports SSO + MFA
+# Edit the configuration section below, then run!
+
+# ========================================
+# CONFIGURATION - EDIT THIS SECTION
+# ========================================
+
+$Config = @{
+    # Your SharePoint site URL
+    SiteUrl = "https://your-company.sharepoint.com/sites/your-site"
+    
+    # Base folder path (where user folders are located)
+    FolderBasePath = "/sites/your-site/Shared Documents/share/"
+    
+    # Default permission level (Read, Contribute, Edit, Full Control)
+    DefaultPermission = "Contribute"
+    
+    # Auto-confirm shares (set to $true to skip confirmation)
+    AutoConfirm = $false
+    
+    # Delay between batch operations (seconds)
+    BatchDelay = 1
+}
+
+# User mapping (if folder name differs from email)
+$UserMapping = @{
+    # "FolderName" = "user.email@company.com"
+    # "John Doe" = "john.doe@company.com"
+    # "Project Alpha" = "alpha-team@company.com"
+}
+
+# Common folders for quick access
+$CommonFolders = @(
+    # "John Doe"
+    # "Jane Smith"
+    # "Team Resources"
+)
+
+# ========================================
+# MAIN SCRIPT - DO NOT EDIT BELOW
+# ========================================
+
+$ErrorActionPreference = "Continue"
+$script:Connected = $false
+
+# Functions
+function Write-ColorOutput {
+    param([string]$Message, [string]$Color = "White")
+    Write-Host $Message -ForegroundColor $Color
+}
+
+function Ensure-PnPModule {
+    Write-ColorOutput "Checking PnP PowerShell module..." "Yellow"
+    
+    if (!(Get-Module -ListAvailable -Name "PnP.PowerShell")) {
+        Write-ColorOutput "Installing PnP PowerShell module (no admin required)..." "Yellow"
+        
+        try {
+            # Set TLS 1.2
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            
+            # Install module
+            Install-Module -Name "PnP.PowerShell" -Scope CurrentUser -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
+            Write-ColorOutput "Module installed successfully!" "Green"
+        }
+        catch {
+            Write-ColorOutput "Failed to auto-install. Please run manually:" "Red"
+            Write-ColorOutput "Install-Module -Name PnP.PowerShell -Scope CurrentUser -Force -AllowClobber" "Yellow"
+            return $false
+        }
+    }
+    
+    try {
+        Import-Module PnP.PowerShell -ErrorAction Stop
+        return $true
+    }
+    catch {
+        Write-ColorOutput "Failed to load module: $_" "Red"
+        return $false
+    }
+}
+
+function Connect-SharePoint {
+    if ($script:Connected) { return $true }
+    
+    Write-ColorOutput "`nConnecting to SharePoint..." "Yellow"
+    Write-ColorOutput "Browser will open for authentication (SSO + MFA supported)" "Gray"
+    
+    try {
+        Connect-PnPOnline -Url $Config.SiteUrl -Interactive -ErrorAction Stop
+        $script:Connected = $true
+        Write-ColorOutput "Connected successfully!" "Green"
+        return $true
+    }
+    catch {
+        Write-ColorOutput "Connection failed: $_" "Red"
+        return $false
+    }
+}
+
+function Find-User {
+    param([string]$DisplayName)
+    
+    Write-ColorOutput "`nSearching for user: $DisplayName" "Cyan"
+    
+    # Check user mapping first
+    if ($UserMapping.ContainsKey($DisplayName)) {
+        $email = $UserMapping[$DisplayName]
+        Write-ColorOutput "Using mapped email: $email" "Gray"
+        
+        try {
+            $user = Get-PnPUser | Where-Object { $_.Email -eq $email } | Select-Object -First 1
+            if ($user) {
+                Write-ColorOutput "Found user: $($user.Title)" "Green"
+                return $user
+            }
+        }
+        catch {
+            Write-ColorOutput "Error finding mapped user: $_" "Red"
+        }
+    }
+    
+    # Search by display name
+    try {
+        $users = Get-PnPUser | Where-Object { 
+            ($_.Title -like "*$DisplayName*" -or $_.Email -like "*$DisplayName*") -and 
+            $_.Email -and 
+            $_.Title -notlike "*system*"
+        }
+        
+        if ($users.Count -eq 0) {
+            Write-ColorOutput "No users found" "Red"
+            return $null
+        }
+        elseif ($users.Count -eq 1) {
+            Write-ColorOutput "Found user: $($users[0].Title) ($($users[0].Email))" "Green"
+            return $users[0]
+        }
+        else {
+            Write-ColorOutput "Multiple users found:" "Yellow"
+            for ($i = 0; $i -lt $users.Count; $i++) {
+                Write-Host "  $($i+1). $($users[$i].Title) - $($users[$i].Email)"
+            }
+            
+            $choice = Read-Host "`nSelect user number"
+            if ($choice -match '^\d+$' -and [int]$choice -le $users.Count) {
+                return $users[[int]$choice - 1]
+            }
+        }
+    }
+    catch {
+        Write-ColorOutput "Search error: $_" "Red"
+    }
+    
+    return $null
+}
+
+function Share-Folder {
+    param(
+        [string]$FolderName,
+        [string]$Permission = $Config.DefaultPermission
+    )
+    
+    Write-ColorOutput "`nProcessing folder: $FolderName" "Yellow"
+    
+    $fullPath = $Config.FolderBasePath + $FolderName
+    Write-ColorOutput "Path: $fullPath" "Gray"
+    
+    # Find user
+    $user = Find-User -DisplayName $FolderName
+    
+    if (-not $user) {
+        $email = Read-Host "`nUser not found. Enter email manually (or press Enter to skip)"
+        if ($email) {
+            try {
+                $user = Get-PnPUser | Where-Object { $_.Email -eq $email } | Select-Object -First 1
+                if (-not $user) {
+                    Write-ColorOutput "Email not found" "Red"
+                    return $false
+                }
+            }
+            catch {
+                Write-ColorOutput "Error: $_" "Red"
+                return $false
+            }
+        }
+        else {
+            return $false
+        }
+    }
+    
+    # Confirm share
+    if (-not $Config.AutoConfirm) {
+        $confirm = Read-Host "`nShare with $($user.Title)? (Y/n)"
+        if ($confirm -eq 'n') {
+            Write-ColorOutput "Cancelled" "Yellow"
+            return $false
+        }
+    }
+    
+    # Share folder
+    try {
+        Write-ColorOutput "Sharing..." "Gray"
+        
+        Set-PnPFolderPermission -List "Documents" -Identity $fullPath `
+            -User $user.LoginName -AddRole $Permission -ErrorAction Stop
+        
+        Write-ColorOutput "Successfully shared with: $($user.Title)" "Green"
+        Write-ColorOutput "Permission: $Permission" "Gray"
+        
+        if ($Config.BatchDelay -gt 0) {
+            Start-Sleep -Seconds $Config.BatchDelay
+        }
+        
+        return $true
+    }
+    catch {
+        # Try alternative method
+        try {
+            Write-ColorOutput "Trying alternative method..." "Yellow"
+            
+            $folder = Get-PnPFolder -Url $fullPath -Includes ListItemAllFields
+            $listItem = $folder.ListItemAllFields
+            
+            Set-PnPListItemPermission -List "Documents" -Identity $listItem.Id `
+                -User $user.LoginName -AddRole $Permission
+            
+            Write-ColorOutput "Successfully shared with: $($user.Title)" "Green"
+            return $true
+        }
+        catch {
+            Write-ColorOutput "Failed to share: $_" "Red"
+            return $false
+        }
+    }
+}
+
+function Show-Menu {
+    Clear-Host
+    Write-ColorOutput "SharePoint Folder Sharing Tool" "Cyan"
+    Write-ColorOutput ("=" * 50) "Gray"
+    Write-ColorOutput "Site: $($Config.SiteUrl)" "Gray"
+    Write-ColorOutput "Path: $($Config.FolderBasePath)" "Gray"
+    Write-ColorOutput ("=" * 50) "Gray"
+    
+    Write-Host "`nOptions:"
+    Write-Host "  1. Share single folder"
+    Write-Host "  2. Batch share from file"
+    Write-Host "  3. Batch share (manual input)"
+    
+    if ($CommonFolders.Count -gt 0) {
+        Write-Host "  4. Quick share (common folders)"
+    }
+    
+    Write-Host "  5. Test connection"
+    Write-Host "  Q. Quit"
+    
+    return Read-Host "`nSelect option"
+}
+
+function Process-Batch {
+    param([string[]]$FolderNames)
+    
+    Write-ColorOutput "`nBatch processing $($FolderNames.Count) folders..." "Cyan"
+    Write-ColorOutput ("=" * 50) "Gray"
+    
+    $success = 0
+    $failed = @()
+    
+    for ($i = 0; $i -lt $FolderNames.Count; $i++) {
+        Write-ColorOutput "`n[$($i+1)/$($FolderNames.Count)]" "Yellow"
+        
+        if (Share-Folder -FolderName $FolderNames[$i].Trim()) {
+            $success++
+        }
+        else {
+            $failed += $FolderNames[$i]
+        }
+    }
+    
+    Write-ColorOutput "`nResults:" "Cyan"
+    Write-ColorOutput "Success: $success/$($FolderNames.Count)" "Green"
+    
+    if ($failed.Count -gt 0) {
+        Write-ColorOutput "`nFailed folders:" "Red"
+        $failed | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    }
+}
+
+# Main execution
+Clear-Host
+
+# Check configuration
+if ($Config.SiteUrl -eq "https://your-company.sharepoint.com/sites/your-site") {
+    Write-ColorOutput "ERROR: Please edit the configuration section in this script!" "Red"
+    Write-ColorOutput "Update these values:" "Yellow"
+    Write-ColorOutput "  - SiteUrl: Your SharePoint site URL" "Gray"
+    Write-ColorOutput "  - FolderBasePath: Your folder path" "Gray"
+    exit 1
+}
+
+# Ensure module is installed
+if (-not (Ensure-PnPModule)) {
+    exit 1
+}
+
+# Handle command line arguments
+if ($args.Count -gt 0) {
+    if (-not (Connect-SharePoint)) { exit 1 }
+    
+    switch ($args[0].ToLower()) {
+        "share" {
+            if ($args.Count -ge 2) {
+                Share-Folder -FolderName $args[1]
+            }
+            else {
+                Write-ColorOutput "Usage: .\SharePoint_Share_AllInOne.ps1 share <FolderName>" "Yellow"
+            }
+        }
+        "batch" {
+            if ($args.Count -ge 2 -and (Test-Path $args[1])) {
+                $folders = Get-Content $args[1] | Where-Object { $_.Trim() }
+                Process-Batch -FolderNames $folders
+            }
+            else {
+                Write-ColorOutput "Usage: .\SharePoint_Share_AllInOne.ps1 batch <FilePath>" "Yellow"
+            }
+        }
+        default {
+            Write-ColorOutput "Unknown command: $($args[0])" "Red"
+        }
+    }
+    exit
+}
+
+# Interactive mode
+if (-not (Connect-SharePoint)) { exit 1 }
+
+while ($true) {
+    $choice = Show-Menu
+    
+    switch ($choice.ToUpper()) {
+        "1" {
+            $folderName = Read-Host "`nEnter folder name"
+            if ($folderName) {
+                Share-Folder -FolderName $folderName
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "2" {
+            $filePath = Read-Host "`nEnter file path (one folder name per line)"
+            if (Test-Path $filePath) {
+                $folders = Get-Content $filePath | Where-Object { $_.Trim() }
+                Process-Batch -FolderNames $folders
+            }
+            else {
+                Write-ColorOutput "File not found" "Red"
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "3" {
+            Write-Host "`nEnter folder names (one per line, empty line to finish):"
+            $folders = @()
+            while ($true) {
+                $input = Read-Host
+                if ([string]::IsNullOrWhiteSpace($input)) { break }
+                $folders += $input
+            }
+            if ($folders.Count -gt 0) {
+                Process-Batch -FolderNames $folders
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "4" {
+            if ($CommonFolders.Count -gt 0) {
+                Write-Host "`nCommon folders:"
+                for ($i = 0; $i -lt $CommonFolders.Count; $i++) {
+                    Write-Host "  $($i+1). $($CommonFolders[$i])"
+                }
+                $choice = Read-Host "`nSelect folder number"
+                if ($choice -match '^\d+$') {
+                    $index = [int]$choice - 1
+                    if ($index -ge 0 -and $index -lt $CommonFolders.Count) {
+                        Share-Folder -FolderName $CommonFolders[$index]
+                    }
+                }
+                Read-Host "`nPress Enter to continue"
+            }
+        }
+        "5" {
+            try {
+                $web = Get-PnPWeb
+                Write-ColorOutput "`nConnection OK!" "Green"
+                Write-ColorOutput "Site Title: $($web.Title)" "Gray"
+                Write-ColorOutput "URL: $($web.Url)" "Gray"
+            }
+            catch {
+                Write-ColorOutput "Connection test failed: $_" "Red"
+            }
+            Read-Host "`nPress Enter to continue"
+        }
+        "Q" {
+            Write-ColorOutput "`nGoodbye!" "Cyan"
+            break
+        }
+        default {
+            Write-ColorOutput "Invalid option" "Red"
+            Start-Sleep -Seconds 1
+        }
+    }
+}

@@ -1,0 +1,25 @@
+@echo off
+REM Simple launcher for SharePoint sharing tool
+REM No admin rights needed!
+
+echo ========================================
+echo  SharePoint Folder Sharing Tool
+echo ========================================
+echo.
+
+if "%~1"=="" (
+    REM Interactive mode
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "SharePoint_Share_AllInOne.ps1"
+) else if "%~1"=="share" (
+    REM Single share
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "SharePoint_Share_AllInOne.ps1" share "%~2"
+) else if "%~1"=="batch" (
+    REM Batch share
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "SharePoint_Share_AllInOne.ps1" batch "%~2"
+) else (
+    echo Usage:
+    echo   Interactive: Run_SharePoint.bat
+    echo   Single share: Run_SharePoint.bat share "FolderName"
+    echo   Batch share: Run_SharePoint.bat batch "file.txt"
+    pause
+)
