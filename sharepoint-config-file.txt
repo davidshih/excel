@@ -1,0 +1,76 @@
+# SharePoint 設定檔
+# 修改這裡的設定就好，不用改主程式！
+# 就像便利商店的會員卡，記住你的喜好！
+
+# ===== 基本設定 =====
+$Global:SharePointConfig = @{
+    # SharePoint 網站 URL
+    SiteUrl = "https://your-company.sharepoint.com/sites/your-site"
+    
+    # 資料夾基礎路徑
+    FolderBasePath = "/sites/your-site/Shared Documents/share/"
+    
+    # 預設權限等級 (Read, Contribute, Edit, Full Control)
+    DefaultPermission = "Contribute"
+    
+    # 記錄檔案名稱
+    LogFile = "sharepoint_share_log.txt"
+    
+    # 是否自動確認分享 (true = 不詢問直接分享)
+    AutoConfirm = $false
+    
+    # 批次處理時的延遲（秒）
+    BatchDelay = 1
+}
+
+# ===== 進階設定 =====
+$Global:AdvancedConfig = @{
+    # 重試次數
+    RetryCount = 3
+    
+    # 超時設定（秒）
+    Timeout = 300
+    
+    # 是否顯示詳細錯誤
+    VerboseError = $true
+    
+    # 預設批次檔案路徑
+    DefaultBatchFile = "folders_to_share.txt"
+}
+
+# ===== 使用者對應設定 =====
+# 如果資料夾名稱和使用者 email 不同，可以在這裡設定對應關係
+$Global:UserMapping = @{
+    # "資料夾名稱" = "使用者email"
+    # "John Doe" = "john.doe@company.com"
+    # "Jane Smith" = "jane.s@company.com"
+}
+
+# ===== 常用資料夾清單 =====
+# 可以設定一些常用的資料夾名稱，方便快速選擇
+$Global:CommonFolders = @(
+    # "John Doe",
+    # "Jane Smith",
+    # "Project Alpha",
+    # "Team Resources"
+)
+
+# ===== 函式：載入自訂設定 =====
+function Load-CustomConfig {
+    $customConfigPath = "SharePoint_Config_Custom.ps1"
+    if (Test-Path $customConfigPath) {
+        Write-Host "載入自訂設定檔..." -ForegroundColor Gray
+        . $customConfigPath
+    }
+}
+
+# 載入自訂設定（如果存在）
+Load-CustomConfig
+
+# 驗證設定
+if ($Global:SharePointConfig.SiteUrl -eq "https://your-company.sharepoint.com/sites/your-site") {
+    Write-Host "⚠️  警告：請先修改 SharePoint_Config.ps1 中的設定！" -ForegroundColor Yellow
+    Write-Host "   需要設定：" -ForegroundColor Yellow
+    Write-Host "   - SiteUrl: 你的 SharePoint 網站網址" -ForegroundColor Gray
+    Write-Host "   - FolderBasePath: 資料夾路徑" -ForegroundColor Gray
+}

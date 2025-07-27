@@ -1,0 +1,16 @@
+# 快速分享腳本 - 最簡化版本
+# 直接分享單一資料夾，不問問題！
+
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$FolderName
+)
+
+# 載入主程式
+$mainScript = Join-Path $PSScriptRoot "SharePoint_Folder_Share.ps1"
+
+# 設定自動確認模式
+$env:SHAREPOINT_AUTO_CONFIRM = "true"
+
+# 執行分享
+& $mainScript share $FolderName
