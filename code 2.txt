@@ -1,0 +1,173 @@
+<#
+.SYNOPSIS
+    Shares SharePoint folders with users based on a matching name convention.
+
+.DESCRIPTION
+    This script automates the process of sharing folders in a SharePoint Online document library.
+    It performs the following steps:
+    1. Checks for and installs required PowerShell modules (PnP.PowerShell, Microsoft.Graph.Users) for the current user.
+    2. Explicitly imports the modules to make their commands available in the current session.
+    3. Connects to SharePoint Online and Microsoft Graph using an interactive browser login.
+    4. Retrieves all folders located directly under a specified base folder URL.
+    5. For each folder, it uses the folder's name as a display name to find a corresponding user in Microsoft 365.
+    6. Grants the found user 'Edit' permissions on the corresponding folder.
+
+.NOTES
+    - Designed for Windows PowerShell 5.1.
+    - Does NOT require Administrator privileges.
+    - Authentication is handled via a browser pop-up, leveraging existing SSO.
+#>
+
+#region ========================= CONFIGURATION - EDIT THESE VALUES =========================
+
+# The full URL to your SharePoint site.
+$siteUrl = "https://yourcompany.sharepoint.com/sites/YourSiteName"
+
+# The server-relative URL of the base folder containing the folders you want to share.
+# Example: If your folders are in "Documents/Projects/", use "/sites/YourSiteName/Shared Documents/Projects"
+# IMPORTANT: It usually starts with "/sites/YourSiteName/" followed by the library name ("Shared Documents" is default) and the path.
+$baseFolderRelativeUrl = "/sites/YourSiteName/Shared Documents/ClientFolders"
+
+# The permission level to grant. Common values: "Read", "Contribute", "Edit", "Full Control"
+$permissionLevel = "Edit"
+
+#endregion =================================================================================
+
+
+#region ========================= SCRIPT LOGIC - DO NOT EDIT BELOW ==========================
+
+# --- Step 1: Check, Install, and Import Required Modules ---
+function Ensure-ModuleInstalled {
+    param(
+        [string]$ModuleName,
+        [string]$PackageName = $ModuleName
+    )
+    if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
+        Write-Host "Module '$ModuleName' not found. Installing for the current user..." -ForegroundColor Yellow
+        try {
+            # Install the module for the current user only
+            Install-Module -Name $PackageName -Scope CurrentUser -Repository PSGallery -Force -AllowClobber
+            Write-Host "Module '$ModuleName' installed successfully." -ForegroundColor Green
+        }
+        catch {
+            Write-Host "Error installing module '$ModuleName'. Please check your internet connection and try again." -ForegroundColor Red
+            exit
+        }
+    }
+    else {
+        Write-Host "Module '$ModuleName' is already installed." -ForegroundColor Cyan
+    }
+    # **NEW/IMPROVED STEP**: Explicitly import the module to make commands available in this session.
+    Write-Host "Importing module '$ModuleName' into the current session..."
+    Import-Module $ModuleName
+}
+
+Write-Host "--- Checking for necessary PowerShell modules ---"
+# PnP.PowerShell for SharePoint interaction
+Ensure-ModuleInstalled -ModuleName "PnP.PowerShell"
+# Microsoft.Graph.Users for finding user emails
+Ensure-ModuleInstalled -ModuleName "Microsoft.Graph.Users" -PackageName "Microsoft.Graph"
+
+# --- Step 2: Authentication ---
+try {
+    Write-Host "`n--- Authenticating with Microsoft 365 (Graph) ---"
+    Write-Host "A browser window will open for you to sign in. Please complete the authentication." -ForegroundColor Yellow
+    # Scopes needed to search for users by their display name
+    Connect-MgGraph -Scopes "User.Read.All"
+    Write-Host "Successfully connected to Microsoft Graph." -ForegroundColor Green
+
+    Write-Host "`n--- Authenticating with SharePoint Online ---"
+    Write-Host "A browser window might open again for SharePoint. Please complete the authentication." -ForegroundColor Yellow
+    Connect-PnPOnline -Url $siteUrl -Interactive
+    $context = Get-PnPContext
+    Write-Host "Successfully connected to SharePoint site: $($context.Url)" -ForegroundColor Green
+}
+catch {
+    Write-Host "Failed to authenticate. Please check the Site URL and your credentials." -ForegroundColor Red
+    Write-Error $_.Exception.Message
+    exit
+}
+
+# --- Step 3: Find Folders to Process ---
+Write-Host "`n--- Finding folders in base location: '$baseFolderRelativeUrl' ---"
+try {
+    # Get items within the base folder and filter for folders only
+    $foldersToProcess = Get-PnPFolderItem -FolderSiteRelativeUrl $baseFolderRelativeUrl | Where-Object { $_.Name -ne "Forms" -and $_.Type -eq "Folder" }
+
+    if (-not $foldersToProcess) {
+        Write-Host "No folders found in the specified base folder. Please check the '$baseFolderRelativeUrl' path." -ForegroundColor Red
+        Disconnect-PnPOnline
+        Disconnect-MgGraph
+        exit
+    }
+    
+    $folderCount = ($foldersToProcess | Measure-Object).Count
+    Write-Host "Found $folderCount folder(s) to process." -ForegroundColor Green
+    $foldersToProcess | ForEach-Object { Write-Host "  - $($_.Name)" }
+}
+catch {
+    Write-Host "Error retrieving folders. Please verify the '$baseFolderRelativeUrl' is correct and you have access." -ForegroundColor Red
+    Write-Error $_.Exception.Message
+    Disconnect-PnPOnline
+    Disconnect-MgGraph
+    exit
+}
+
+
+# --- Step 4: Confirmation before Sharing ---
+Write-Host "" # Newline
+$confirmation = Read-Host "Are you sure you want to share these $folderCount folder(s) with users matching the folder names? (Y/N)"
+if ($confirmation -ne 'Y') {
+    Write-Host "Operation cancelled by user." -ForegroundColor Yellow
+    Disconnect-PnPOnline
+    Disconnect-MgGraph
+    exit
+}
+
+
+# --- Step 5: Process Each Folder ---
+Write-Host "`n--- Starting the sharing process ---"
+foreach ($folder in $foldersToProcess) {
+    $folderName = $folder.Name
+    $folderUrl = $folder.ServerRelativeUrl
+    Write-Host "`nProcessing folder: '$folderName'" -ForegroundColor Cyan
+
+    # Find the user in M365 whose Display Name matches the folder name
+    try {
+        Write-Host "  -> Searching for user with display name: '$folderName'..."
+        # Using a filter to find the user by their display name
+        $user = Get-MgUser -Filter "displayName eq '$folderName'" -ErrorAction SilentlyContinue
+        
+        if ($null -eq $user) {
+            Write-Host "  -> WARNING: No user found with display name '$folderName'. Skipping this folder." -ForegroundColor Yellow
+            continue # Skip to the next folder in the loop
+        }
+
+        if (($user | Measure-Object).Count -gt 1) {
+            Write-Host "  -> WARNING: Multiple users found with display name '$folderName'. Skipping to avoid ambiguity." -ForegroundColor Yellow
+            continue
+        }
+
+        $userEmail = $user.UserPrincipalName
+        Write-Host "  -> Found user: $userEmail"
+
+        # Share the folder with the user
+        Write-Host "  -> Sharing folder '$folderName' with '$userEmail' giving '$permissionLevel' permissions..."
+        Set-PnPFolderPermission -FolderSiteRelativeUrl $folderUrl -User $userEmail -AddRole $permissionLevel -ErrorAction Stop
+        
+        Write-Host "  -> SUCCESS: Folder '$folderName' shared successfully." -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  -> ERROR: Failed to share folder '$folderName'." -ForegroundColor Red
+        Write-Host "     Error details: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# --- Step 6: Disconnect Sessions ---
+Write-Host "`n--- Script finished. Disconnecting sessions. ---"
+Disconnect-PnPOnline
+Disconnect-MgGraph
+
+#endregion
+Use code with caution.
+Powershell
