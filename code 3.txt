@@ -1,0 +1,104 @@
+# ===================================================================================
+# Script to create a folder for a reviewer and set permissions.
+# Version: 2.1 (Legacy Auth for PnP v1.12.0)
+# Last Updated: 2025-07-28
+# ===================================================================================
+
+# --- 請在這裡填入你的資訊 ---
+# 1. 你的 SharePoint 網站 URL
+$siteUrl = "https://applebank.sharepoint.com/sites/informationsecurity"
+
+# 2. 你要建立資料夾的基礎路徑 (文件庫名稱)
+$baseFolder = "Shared Documents/Information Security Shared Repository/Cyber Risk Metrics - TOPC & RPR/Evidence Repository - 2025/May"
+
+# 3. 要尋找並給予權限的使用者名稱
+$reviewerName = "David Shih"
+
+# --- 主腳本開始 ---
+
+Write-Host "Starting script with PnP v1.12.0 compatibility..." -ForegroundColor Green
+
+try {
+    # 步驟一：連線到 Microsoft Graph (用於使用者查詢)
+    # 這裡會彈出第一次登入視窗
+    Write-Host "Connecting to Microsoft Graph..."
+    Connect-MgGraph -Scopes "User.Read.All"
+
+    # 步驟二：使用傳統方式連線到 PnP Online
+    # 這裡會彈出第二次登入視窗，這是 v1 版本的正常行為
+    Write-Host "Connecting to SharePoint Online (legacy interactive mode)..."
+    $pnpConnection = Connect-PnPOnline -Url $siteUrl -Interactive -ReturnConnection
+    if (!$pnpConnection) {
+        throw "Failed to connect to PnP Online."
+    }
+    Write-Host "Successfully connected to SharePoint: $($pnpConnection.Url)"
+
+
+    # 步驟三：定義一個可靠的函式來找使用者 Email
+    function Get-UserEmail {
+        param (
+            [string]$displayName
+        )
+        
+        Write-Host "Searching for user '$displayName'..."
+        $users = Get-MgUser -Search """$displayName"""" -Top 10 -Select UserPrincipalName, DisplayName
+        
+        if (!$users) {
+            Write-Warning "No user found for display name: '$displayName'"
+            return $null
+        }
+
+        if ($users.Count -eq 1) {
+            Write-Host "Found one user: $($users.UserPrincipalName)"
+            return $users.UserPrincipalName
+        }
+
+        Write-Warning "Multiple users found for '$displayName'. Please choose one:"
+        for ($i = 0; $i -lt $users.Count; $i++) {
+            Write-Host "  [$($i+1)] $($users[$i].DisplayName) ($($users[$i].UserPrincipalName))"
+        }
+        $choice = Read-Host "Select user number"
+        $index = [int]$choice - 1
+        
+        if ($index -ge 0 -and $index -lt $users.Count) {
+            return $users[$index].UserPrincipalName
+        } else {
+            Write-Error "Invalid selection."
+            return $null
+        }
+    }
+
+    # 步驟四：執行主要邏輯
+    $userEmail = Get-UserEmail -displayName $reviewerName
+    
+    if (-not [string]::IsNullOrEmpty($userEmail)) {
+        $folderPath = "$($baseFolder)/$($reviewerName)"
+        
+        Write-Host "Creating folder at: $folderPath"
+        Add-PnPFolder -Folder $folderPath
+        
+        Write-Host "Setting 'Edit' permission for '$userEmail' on folder '$folderPath'"
+        Set-PnPFolderPermission -Folder $folderPath -User $userEmail -AddRole 'Edit'
+
+        Write-Host "Successfully shared folder for $reviewerName." -ForegroundColor Green
+    } else {
+        Write-Warning "Skipping folder sharing because email for '$reviewerName' could not be found."
+    }
+
+}
+catch {
+    Write-Host "An error occurred during script execution!" -ForegroundColor Red
+    Write-Error $_.Exception.Message
+    $_ | Format-List * -Force
+}
+finally {
+    # 步驟五：無論成功或失敗，都斷開連線
+    Write-Host "Disconnecting all sessions..."
+    if (Get-PnPConnection -ErrorAction SilentlyContinue) {
+        Disconnect-PnPOnline
+    }
+    if (Get-MgGraphConnection -ErrorAction SilentlyContinue) {
+        Disconnect-MgGraph
+    }
+    Write-Host "Sharing process completed!" -ForegroundColor Green
+}
