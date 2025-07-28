@@ -6,10 +6,11 @@
     This script automates the process of sharing folders in a SharePoint Online document library.
     It performs the following steps:
     1. Checks for and installs required PowerShell modules (PnP.PowerShell, Microsoft.Graph.Users) for the current user.
-    2. Connects to SharePoint Online and Microsoft Graph using an interactive browser login.
-    3. Retrieves all folders located directly under a specified base folder URL.
-    4. For each folder, it uses the folder's name as a display name to find a corresponding user in Microsoft 365.
-    5. Grants the found user 'Edit' permissions on the corresponding folder.
+    2. Explicitly imports the modules to make their commands available in the current session.
+    3. Connects to SharePoint Online and Microsoft Graph using an interactive browser login.
+    4. Retrieves all folders located directly under a specified base folder URL.
+    5. For each folder, it uses the folder's name as a display name to find a corresponding user in Microsoft 365.
+    6. Grants the found user 'Edit' permissions on the corresponding folder.
 
 .NOTES
     - Designed for Windows PowerShell 5.1.
@@ -35,7 +36,7 @@ $permissionLevel = "Edit"
 
 #region ========================= SCRIPT LOGIC - DO NOT EDIT BELOW ==========================
 
-# --- Step 1: Check and Install Required Modules ---
+# --- Step 1: Check, Install, and Import Required Modules ---
 function Ensure-ModuleInstalled {
     param(
         [string]$ModuleName,
@@ -44,18 +45,21 @@ function Ensure-ModuleInstalled {
     if (-not (Get-Module -ListAvailable -Name $ModuleName)) {
         Write-Host "Module '$ModuleName' not found. Installing for the current user..." -ForegroundColor Yellow
         try {
+            # Install the module for the current user only
             Install-Module -Name $PackageName -Scope CurrentUser -Repository PSGallery -Force -AllowClobber
             Write-Host "Module '$ModuleName' installed successfully." -ForegroundColor Green
         }
         catch {
             Write-Host "Error installing module '$ModuleName'. Please check your internet connection and try again." -ForegroundColor Red
-            # Exit the script if a required module cannot be installed
             exit
         }
     }
     else {
         Write-Host "Module '$ModuleName' is already installed." -ForegroundColor Cyan
     }
+    # **NEW/IMPROVED STEP**: Explicitly import the module to make commands available in this session.
+    Write-Host "Importing module '$ModuleName' into the current session..."
+    Import-Module $ModuleName
 }
 
 Write-Host "--- Checking for necessary PowerShell modules ---"
@@ -165,3 +169,5 @@ Disconnect-PnPOnline
 Disconnect-MgGraph
 
 #endregion
+Use code with caution.
+Powershell
