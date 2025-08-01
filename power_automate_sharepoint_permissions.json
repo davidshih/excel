@@ -1,0 +1,309 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2016-06-01/Microsoft.Logic.json",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "siteUrl": {
+              "type": "string",
+              "description": "SharePoint 網站 URL"
+            },
+            "libraryName": {
+              "type": "string", 
+              "description": "文件庫名稱"
+            },
+            "permissions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "folderName": {
+                    "type": "string"
+                  },
+                  "userEmail": {
+                    "type": "string"
+                  },
+                  "permissionLevel": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "excelTrigger": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['excelonlinebusiness']['connectionId']"
+          }
+        },
+        "method": "get",
+        "path": "/codeless/v1.2/drives/@{encodeURIComponent('me')}/items/@{encodeURIComponent('EXCEL_FILE_ID')}/workbook/tables/@{encodeURIComponent('權限設定表')}/onNewRow",
+        "queries": {
+          "source": "me"
+        }
+      },
+      "recurrence": {
+        "frequency": "Minute",
+        "interval": 5
+      },
+      "description": "當 Excel 表格有新資料時觸發"
+    }
+  },
+  "actions": {
+    "初始化變數_成功計數": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "successCount",
+            "type": "integer",
+            "value": 0
+          }
+        ]
+      }
+    },
+    "初始化變數_失敗計數": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "failureCount",
+            "type": "integer",
+            "value": 0
+          }
+        ]
+      },
+      "runAfter": {
+        "初始化變數_成功計數": ["Succeeded"]
+      }
+    },
+    "初始化變數_錯誤訊息": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "errorMessages",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {
+        "初始化變數_失敗計數": ["Succeeded"]
+      }
+    },
+    "取得權限資料": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['excelonlinebusiness']['connectionId']"
+          }
+        },
+        "method": "get",
+        "path": "/codeless/v1.2/drives/@{encodeURIComponent('me')}/items/@{encodeURIComponent('EXCEL_FILE_ID')}/workbook/tables/@{encodeURIComponent('權限設定表')}/rows",
+        "queries": {
+          "source": "me",
+          "$filter": "處理狀態 eq '待處理'"
+        }
+      },
+      "runAfter": {
+        "初始化變數_錯誤訊息": ["Succeeded"]
+      },
+      "description": "從 Excel 取得待處理的權限設定"
+    },
+    "處理每個權限設定": {
+      "type": "Foreach",
+      "foreach": "@body('取得權限資料')?['value']",
+      "actions": {
+        "嘗試設定權限": {
+          "type": "Scope",
+          "actions": {
+            "取得資料夾": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "get",
+                "path": "/datasets/@{encodeURIComponent(items('處理每個權限設定')?['站台名稱'])}/folders/@{encodeURIComponent(concat(items('處理每個權限設定')?['文件庫'], '/', items('處理每個權限設定')?['資料夾名稱']))}"
+              }
+            },
+            "停止繼承權限": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(items('處理每個權限設定')?['站台名稱'])}/breakroleinheritance",
+                "body": {
+                  "item": "@body('取得資料夾')?['Id']",
+                  "copyRoleAssignments": false,
+                  "clearSubscopes": true
+                }
+              },
+              "runAfter": {
+                "取得資料夾": ["Succeeded"]
+              }
+            },
+            "授予權限": {
+              "type": "ApiConnection", 
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['sharepointonline']['connectionId']"
+                  }
+                },
+                "method": "post",
+                "path": "/datasets/@{encodeURIComponent(items('處理每個權限設定')?['站台名稱'])}/grantaccess",
+                "body": {
+                  "item": "@body('取得資料夾')?['Id']",
+                  "recipients": "@items('處理每個權限設定')?['Email']",
+                  "roleValue": "@items('處理每個權限設定')?['權限等級']",
+                  "sendEmail": true,
+                  "emailSubject": "您已獲得 SharePoint 資料夾存取權限",
+                  "emailBody": "您好，您已獲得以下資料夾的存取權限：@{items('處理每個權限設定')?['資料夾名稱']}"
+                }
+              },
+              "runAfter": {
+                "停止繼承權限": ["Succeeded"]
+              }
+            },
+            "更新處理狀態_成功": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['excelonlinebusiness']['connectionId']"
+                  }
+                },
+                "method": "patch",
+                "path": "/codeless/v1.2/drives/@{encodeURIComponent('me')}/items/@{encodeURIComponent('EXCEL_FILE_ID')}/workbook/tables/@{encodeURIComponent('權限設定表')}/rows/key/@{encodeURIComponent(items('處理每個權限設定')?['index'])}",
+                "body": {
+                  "values": [["已處理", "@{utcNow()}", "成功"]]
+                }
+              },
+              "runAfter": {
+                "授予權限": ["Succeeded"]
+              }
+            },
+            "增加成功計數": {
+              "type": "IncrementVariable",
+              "inputs": {
+                "name": "successCount",
+                "value": 1
+              },
+              "runAfter": {
+                "更新處理狀態_成功": ["Succeeded"]
+              }
+            }
+          },
+          "runAfter": {}
+        },
+        "錯誤處理": {
+          "type": "Scope",
+          "actions": {
+            "更新處理狀態_失敗": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['excelonlinebusiness']['connectionId']"
+                  }
+                },
+                "method": "patch",
+                "path": "/codeless/v1.2/drives/@{encodeURIComponent('me')}/items/@{encodeURIComponent('EXCEL_FILE_ID')}/workbook/tables/@{encodeURIComponent('權限設定表')}/rows/key/@{encodeURIComponent(items('處理每個權限設定')?['index'])}",
+                "body": {
+                  "values": [["處理失敗", "@{utcNow()}", "@{result('嘗試設定權限')}"]]
+                }
+              }
+            },
+            "增加失敗計數": {
+              "type": "IncrementVariable",
+              "inputs": {
+                "name": "failureCount",
+                "value": 1
+              },
+              "runAfter": {
+                "更新處理狀態_失敗": ["Succeeded"]
+              }
+            },
+            "新增錯誤訊息": {
+              "type": "AppendToArrayVariable",
+              "inputs": {
+                "name": "errorMessages",
+                "value": {
+                  "folder": "@items('處理每個權限設定')?['資料夾名稱']",
+                  "user": "@items('處理每個權限設定')?['Email']",
+                  "error": "@{result('嘗試設定權限')}"
+                }
+              },
+              "runAfter": {
+                "增加失敗計數": ["Succeeded"]
+              }
+            }
+          },
+          "runAfter": {
+            "嘗試設定權限": ["Failed", "Skipped", "TimedOut"]
+          }
+        }
+      },
+      "runAfter": {
+        "取得權限資料": ["Succeeded"]
+      }
+    },
+    "傳送處理結果通知": {
+      "type": "ApiConnection",
+      "inputs": {
+        "host": {
+          "connection": {
+            "name": "@parameters('$connections')['office365']['connectionId']"
+          }
+        },
+        "method": "post",
+        "path": "/v2/Mail",
+        "body": {
+          "Subject": "SharePoint 權限設定處理結果",
+          "Body": "<p>權限設定處理已完成：</p><ul><li>成功：@{variables('successCount')} 個</li><li>失敗：@{variables('failureCount')} 個</li></ul><p>錯誤詳情：</p><pre>@{variables('errorMessages')}</pre>",
+          "To": "admin@company.com",
+          "Importance": "Normal"
+        }
+      },
+      "runAfter": {
+        "處理每個權限設定": ["Succeeded", "Failed"]
+      }
+    }
+  },
+  "outputs": {
+    "處理結果": {
+      "type": "object",
+      "value": {
+        "成功數量": "@variables('successCount')",
+        "失敗數量": "@variables('failureCount')",
+        "錯誤訊息": "@variables('errorMessages')",
+        "處理時間": "@utcNow()"
+      }
+    }
+  }
+}
