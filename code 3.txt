@@ -1,98 +1,156 @@
-# Power Automate Desktop Flow - SharePoint 資料夾分享腳本
-# 記得先安裝 Power Automate Desktop 喔！
-
-# 變數設定區
-SET RootFolderPath TO 'C:\你的資料夾路徑'  # 改成你的實際路徑
-SET SharePointSiteUrl TO 'https://你的組織.sharepoint.com/sites/你的網站'
-SET EmailSubject TO '您的專屬資料夾已經準備好囉！'
-SET EmailBody TO '哈囉 {UserName}，
-
-您的專屬資料夾已經設定完成，您現在有編輯權限了。
-
-資料夾位置：{FolderUrl}
-
-如有任何問題請隨時聯繫我們。
-
-祝工作愉快！'
-
-# 主流程開始
-BLOCK '主要流程'
-    # 1. 取得所有子資料夾
-    Folder.GetSubfolders Folder: RootFolderPath Subfolders=> SubFolders
-    
-    # 2. 迴圈處理每個子資料夾
-    LOOP FOREACH CurrentFolder IN SubFolders
-        # 取得資料夾名稱（即使用者名稱）
-        SET UserName TO CurrentFolder.Name
-        
-        # 建立錯誤處理
-        ON ERROR
-            # 記錄錯誤
-            Text.AppendLine Text: 'Error processing folder for user: ' & UserName & ' - Error: ' & LastError File: 'C:\SharePointSharingLog.txt'
-            CONTINUE
-        END
-        
-        # 3. 呼叫 SharePoint API 設定權限
-        BLOCK '設定 SharePoint 權限'
-            # 使用 HTTP Request 來呼叫 SharePoint REST API
-            SET FolderRelativeUrl TO '/sites/你的網站/Shared Documents/' & UserName
-            
-            # 取得使用者資訊
-            SET GetUserEndpoint TO SharePointSiteUrl & '/_api/web/siteusers?$filter=LoginName eq ''i:0#.f|membership|' & UserName & '@你的組織.com'''
-            
-            Web.InvokeWebService.InvokeWebService Url: GetUserEndpoint \
-                Method: 'GET' \
-                Accept: 'application/json' \
-                ContentType: 'application/json' \
-                CustomHeaders: {'Authorization': 'Bearer ' & AccessToken} \
-                Response=> UserResponse
-            
-            # 解析使用者 ID
-            Variables.ConvertJsonToCustomObject Json: UserResponse.BodyAsText CustomObject=> UserObject
-            SET UserId TO UserObject.value[0].Id
-            
-            # 設定資料夾權限
-            SET PermissionEndpoint TO SharePointSiteUrl & '/_api/web/GetFolderByServerRelativeUrl(''' & FolderRelativeUrl & ''')/ListItemAllFields/roleassignments/addroleassignment(principalid=' & UserId & ',roledefid=1073741827)'
-            
-            Web.InvokeWebService.InvokeWebService Url: PermissionEndpoint \
-                Method: 'POST' \
-                Accept: 'application/json' \
-                ContentType: 'application/json' \
-                CustomHeaders: {'Authorization': 'Bearer ' & AccessToken, 'X-RequestDigest': FormDigestValue} \
-                Response=> PermissionResponse
-        END
-        
-        # 4. 發送電子郵件
-        BLOCK '發送通知郵件'
-            # 準備郵件內容
-            SET FolderUrl TO SharePointSiteUrl & '/Shared Documents/' & UserName
-            SET PersonalizedEmailBody TO EmailBody
-            Text.Replace Text: PersonalizedEmailBody TextToFind: '{UserName}' TextToReplace: UserName ReplacedText=> PersonalizedEmailBody
-            Text.Replace Text: PersonalizedEmailBody TextToFind: '{FolderUrl}' TextToReplace: FolderUrl ReplacedText=> PersonalizedEmailBody
-            
-            # 使用 Outlook 發送郵件
-            Outlook.Launch Instance=> OutlookInstance
-            Outlook.SendEmail Instance: OutlookInstance \
-                Account: '你的郵件帳號@組織.com' \
-                To: UserName & '@你的組織.com' \
-                Subject: EmailSubject \
-                Body: PersonalizedEmailBody \
-                IsBodyHtml: False
-        END
-        
-        # 記錄成功
-        Text.AppendLine Text: 'Successfully processed folder for user: ' & UserName File: 'C:\SharePointSharingLog.txt'
-        
-        # 避免太快，加個延遲
-        WAIT 2
-    END
-    
-    # 關閉 Outlook
-    Outlook.Close Instance: OutlookInstance
-    
-    # 顯示完成訊息
-    Display.ShowMessage Title: '處理完成' \
-        Message: '所有資料夾已成功分享並發送郵件通知！' \
-        Icon: Display.Icon.Information \
-        Buttons: Display.Buttons.OK
-END
+這就為您獻上改良版流程中，每個核心動作的「程式碼檢視」(Code View) 內容。您可以直接複製這些程式碼片段，或者用來比對、除錯自己的流程設定。
+一、雲端流程 (Cloud Flow) 的程式碼檢視
+1. 觸發器：手動觸發流程 (Manually trigger a flow)
+這是整個流程的起點，定義了需要從桌面流程接收的三個參數。
+Generated json
+{
+    "kind": "Http",
+    "inputs": {
+        "schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "title": "siteUrl", // 註解：對應 SharePoint 網站網址
+                    "type": "string",
+                    "description": "Please enter a value for siteUrl"
+                },
+                "text_1": {
+                    "title": "libraryName", // 註解：對應文件庫名稱
+                    "type": "string",
+                    "description": "Please enter a value for libraryName"
+                },
+                "text_2": {
+                    "title": "parentFolderPath", // 註解：對應父資料夾路徑 (可為空)
+                    "type": "string",
+                    "description": "Please enter a value for parentFolderPath"
+                }
+            },
+            "required": [
+                "text",
+                "text_1"
+            ]
+        }
+    }
+}
+Use code with caution.
+Json
+2. 動作：列出資料夾內容 (List folder contents)
+這個動作負責撈取指定路徑下的所有項目，並開啟了分頁功能。
+Generated json
+{
+    "runAfter": {},
+    "type": "ApiConnection",
+    "inputs": {
+        "host": {
+            "connection": {
+                "name": "@providers('Microsoft.PowerApps/apis/shared_sharepointonline')"
+            }
+        },
+        "method": "get",
+        // 註解：下面這段 path 是重點，它會用表達式組合出正確的 SharePoint API 路徑
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent(triggerBody()['text']))}/foldersv2/@{encodeURIComponent(if(equals(triggerBody()['text_2'], ''), concat('/', triggerBody()['text_1']), concat('/', triggerBody()['text_1'], '/', triggerBody()['text_2'])))}",
+        "queries": {
+            // 註解：這裡就是設定分頁的地方，臨界值設為 5000
+            "$top": 5000 
+        }
+    }
+}
+Use code with caution.
+Json
+3. 迴圈及條件判斷 (Apply_to_each & Condition)
+這部分程式碼檢視會比較巢狀，外層是 Apply_to_each，內層是 Condition。
+Generated json
+{
+    // 註解：迴圈的目標是上一步 "列出資料夾內容" 的 body/value
+    "foreach": "@outputs('列出資料夾內容')?['body/value']",
+    "actions": {
+        "Condition": {
+            "type": "If",
+            // 註解：判斷式，檢查 IsFolder 是否為 true
+            "expression": "@equals(items('Apply_to_each')?['IsFolder'], true)",
+            // 註解：如果為 true，則執行下面的 actions
+            "actions": {
+                // ... (授與權限 & 寄信的動作會放在這裡) ...
+            }
+        }
+    }
+}
+Use code with caution.
+Json
+4. 動作 (在條件內)：授與項目或資料夾的存取權 (Grant access)
+這是實際執行分享的動作。
+Generated json
+{
+    "runAfter": {},
+    "type": "ApiConnection",
+    "inputs": {
+        "host": {
+            "connection": {
+                "name": "@providers('Microsoft.PowerApps/apis/shared_sharepointonline')"
+            }
+        },
+        "method": "post",
+        "path": "/datasets/@{encodeURIComponent(encodeURIComponent(triggerBody()['text']))}/tables/@{encodeURIComponent(triggerBody()['text_1'])}/items/@{encodeURIComponent(items('Apply_to_each')?['ID'])}/share",
+        "body": {
+            // 註解：將資料夾名稱與公司網域組合，並指定角色為 'Write' (可編輯)
+            "recipients": "[{\"email\":\"@{items('Apply_to_each')?['Name']}@{'.yourcompany.com'}\"}]",
+            "role": "Write",
+            "notify": false // 註解：不使用內建通知
+        }
+    }
+}
+Use code with caution.
+Json
+注意： 請務必將 @{'.yourcompany.com'} 中的 .yourcompany.com 換成貴公司的真實郵件網域。
+5. 動作 (在條件內)：傳送電子郵件 (V2) (Send an email)
+這是寄送客製化通知信的動作。
+Generated json
+{
+    "runAfter": {
+        "Grant_access_to_an_item_or_a_folder": [
+            "Succeeded"
+        ]
+    },
+    "type": "ApiConnection",
+    "inputs": {
+        "host": {
+            "connection": {
+                "name": "@providers('Microsoft.PowerApps/apis/shared_office365')"
+            }
+        },
+        "method": "post",
+        "path": "/v2/Mail",
+        "body": {
+            // 註解：收件者同樣是組合後的 Email
+            "To": "@{items('Apply_to_each')?['Name']}@{'.yourcompany.com'}",
+            "Subject": "[自動通知] 已為您開放「@{items('Apply_to_each')?['Name']}」資料夾權限",
+            // 註解：使用 {Link to item} 來取得最正確的連結
+            "Body": "您好，<br><br>系統已將資料夾「<b>@{items('Apply_to_each')?['Name']}</b>」的「編輯」權限授予給您。<br><br>您可以點擊此連結直接開啟：<a href=\"@{items('Apply_to_each')?['{Link to item}']}\">點我開啟專屬資料夾</a><br><br>此為系統自動發送郵件，若有疑問請直接回覆，謝謝！",
+            "IsHtml": true
+        }
+    }
+}
+Use code with caution.
+Json
+二、桌面流程 (Desktop Flow) 的程式碼檢視
+桌面流程的程式碼不是 JSON，而是一種腳本語言。這裡用文字描述其設定。
+1. & 2. & 3. 顯示輸入對話方塊 (Display input dialog)
+這三個動作的程式碼格式類似：
+Generated code
+Display.InputDialog Title: "SharePoint 網站 URL" Message: "請輸入完整 Site URL..." IsTopMost: False DefaultValue: "" ButtonPressed=>ButtonPressed Input=>SiteUrl
+Display.InputDialog Title: "文件庫名稱" Message: "請輸入文件庫名稱..." IsTopMost: False DefaultValue: "" ButtonPressed=>ButtonPressed Input=>LibraryName
+Display.InputDialog Title: "父資料夾路徑 (可留空)" Message: "若要指定子資料夾..." IsTopMost: False DefaultValue: "" ButtonPressed=>ButtonPressed Input=>ParentFolderPath
+Use code with caution.
+4. 執行用 Power Automate 建立的流程 (Run a flow built with Power Automate)
+這是最關鍵的動作，它負責安全地呼叫雲端流程。
+Generated code
+Flow.RunFlow RunMode: Flow.RunMode.FireAndForget FlowId: "YOUR-CLOUD-FLOW-GUID" InputArguments: $'''{
+  "text": "%SiteUrl%",
+  "text_1": "%LibraryName%",
+  "text_2": "%ParentFolderPath%"
+}'''
+Use code with caution.
+注意：
+FlowId 這裡會是您雲端流程的唯一識別碼 (GUID)，在您選擇流程後會自動填入。
+InputArguments 中的 text, text_1, text_2 必須與雲端流程觸發器中定義的 ID 完全一致。
+把這些 code view 內容當作是武功祕笈，當您遇到流程行為不如預期時，直接打開來比對一下，通常就能找到問題所在。祝您使用愉快！
