@@ -1,104 +1,98 @@
-# ===================================================================================
-# Script to create a folder for a reviewer and set permissions.
-# Version: 2.1 (Legacy Auth for PnP v1.12.0)
-# Last Updated: 2025-07-28
-# ===================================================================================
+# Power Automate Desktop Flow - SharePoint 資料夾分享腳本
+# 記得先安裝 Power Automate Desktop 喔！
 
-# --- 請在這裡填入你的資訊 ---
-# 1. 你的 SharePoint 網站 URL
-$siteUrl = "https://applebank.sharepoint.com/sites/informationsecurity"
+# 變數設定區
+SET RootFolderPath TO 'C:\你的資料夾路徑'  # 改成你的實際路徑
+SET SharePointSiteUrl TO 'https://你的組織.sharepoint.com/sites/你的網站'
+SET EmailSubject TO '您的專屬資料夾已經準備好囉！'
+SET EmailBody TO '哈囉 {UserName}，
 
-# 2. 你要建立資料夾的基礎路徑 (文件庫名稱)
-$baseFolder = "Shared Documents/Information Security Shared Repository/Cyber Risk Metrics - TOPC & RPR/Evidence Repository - 2025/May"
+您的專屬資料夾已經設定完成，您現在有編輯權限了。
 
-# 3. 要尋找並給予權限的使用者名稱
-$reviewerName = "David Shih"
+資料夾位置：{FolderUrl}
 
-# --- 主腳本開始 ---
+如有任何問題請隨時聯繫我們。
 
-Write-Host "Starting script with PnP v1.12.0 compatibility..." -ForegroundColor Green
+祝工作愉快！'
 
-try {
-    # 步驟一：連線到 Microsoft Graph (用於使用者查詢)
-    # 這裡會彈出第一次登入視窗
-    Write-Host "Connecting to Microsoft Graph..."
-    Connect-MgGraph -Scopes "User.Read.All"
-
-    # 步驟二：使用傳統方式連線到 PnP Online
-    # 這裡會彈出第二次登入視窗，這是 v1 版本的正常行為
-    Write-Host "Connecting to SharePoint Online (legacy interactive mode)..."
-    $pnpConnection = Connect-PnPOnline -Url $siteUrl -Interactive -ReturnConnection
-    if (!$pnpConnection) {
-        throw "Failed to connect to PnP Online."
-    }
-    Write-Host "Successfully connected to SharePoint: $($pnpConnection.Url)"
-
-
-    # 步驟三：定義一個可靠的函式來找使用者 Email
-    function Get-UserEmail {
-        param (
-            [string]$displayName
-        )
-        
-        Write-Host "Searching for user '$displayName'..."
-        $users = Get-MgUser -Search """$displayName"""" -Top 10 -Select UserPrincipalName, DisplayName
-        
-        if (!$users) {
-            Write-Warning "No user found for display name: '$displayName'"
-            return $null
-        }
-
-        if ($users.Count -eq 1) {
-            Write-Host "Found one user: $($users.UserPrincipalName)"
-            return $users.UserPrincipalName
-        }
-
-        Write-Warning "Multiple users found for '$displayName'. Please choose one:"
-        for ($i = 0; $i -lt $users.Count; $i++) {
-            Write-Host "  [$($i+1)] $($users[$i].DisplayName) ($($users[$i].UserPrincipalName))"
-        }
-        $choice = Read-Host "Select user number"
-        $index = [int]$choice - 1
-        
-        if ($index -ge 0 -and $index -lt $users.Count) {
-            return $users[$index].UserPrincipalName
-        } else {
-            Write-Error "Invalid selection."
-            return $null
-        }
-    }
-
-    # 步驟四：執行主要邏輯
-    $userEmail = Get-UserEmail -displayName $reviewerName
+# 主流程開始
+BLOCK '主要流程'
+    # 1. 取得所有子資料夾
+    Folder.GetSubfolders Folder: RootFolderPath Subfolders=> SubFolders
     
-    if (-not [string]::IsNullOrEmpty($userEmail)) {
-        $folderPath = "$($baseFolder)/$($reviewerName)"
+    # 2. 迴圈處理每個子資料夾
+    LOOP FOREACH CurrentFolder IN SubFolders
+        # 取得資料夾名稱（即使用者名稱）
+        SET UserName TO CurrentFolder.Name
         
-        Write-Host "Creating folder at: $folderPath"
-        Add-PnPFolder -Folder $folderPath
+        # 建立錯誤處理
+        ON ERROR
+            # 記錄錯誤
+            Text.AppendLine Text: 'Error processing folder for user: ' & UserName & ' - Error: ' & LastError File: 'C:\SharePointSharingLog.txt'
+            CONTINUE
+        END
         
-        Write-Host "Setting 'Edit' permission for '$userEmail' on folder '$folderPath'"
-        Set-PnPFolderPermission -Folder $folderPath -User $userEmail -AddRole 'Edit'
-
-        Write-Host "Successfully shared folder for $reviewerName." -ForegroundColor Green
-    } else {
-        Write-Warning "Skipping folder sharing because email for '$reviewerName' could not be found."
-    }
-
-}
-catch {
-    Write-Host "An error occurred during script execution!" -ForegroundColor Red
-    Write-Error $_.Exception.Message
-    $_ | Format-List * -Force
-}
-finally {
-    # 步驟五：無論成功或失敗，都斷開連線
-    Write-Host "Disconnecting all sessions..."
-    if (Get-PnPConnection -ErrorAction SilentlyContinue) {
-        Disconnect-PnPOnline
-    }
-    if (Get-MgGraphConnection -ErrorAction SilentlyContinue) {
-        Disconnect-MgGraph
-    }
-    Write-Host "Sharing process completed!" -ForegroundColor Green
-}
+        # 3. 呼叫 SharePoint API 設定權限
+        BLOCK '設定 SharePoint 權限'
+            # 使用 HTTP Request 來呼叫 SharePoint REST API
+            SET FolderRelativeUrl TO '/sites/你的網站/Shared Documents/' & UserName
+            
+            # 取得使用者資訊
+            SET GetUserEndpoint TO SharePointSiteUrl & '/_api/web/siteusers?$filter=LoginName eq ''i:0#.f|membership|' & UserName & '@你的組織.com'''
+            
+            Web.InvokeWebService.InvokeWebService Url: GetUserEndpoint \
+                Method: 'GET' \
+                Accept: 'application/json' \
+                ContentType: 'application/json' \
+                CustomHeaders: {'Authorization': 'Bearer ' & AccessToken} \
+                Response=> UserResponse
+            
+            # 解析使用者 ID
+            Variables.ConvertJsonToCustomObject Json: UserResponse.BodyAsText CustomObject=> UserObject
+            SET UserId TO UserObject.value[0].Id
+            
+            # 設定資料夾權限
+            SET PermissionEndpoint TO SharePointSiteUrl & '/_api/web/GetFolderByServerRelativeUrl(''' & FolderRelativeUrl & ''')/ListItemAllFields/roleassignments/addroleassignment(principalid=' & UserId & ',roledefid=1073741827)'
+            
+            Web.InvokeWebService.InvokeWebService Url: PermissionEndpoint \
+                Method: 'POST' \
+                Accept: 'application/json' \
+                ContentType: 'application/json' \
+                CustomHeaders: {'Authorization': 'Bearer ' & AccessToken, 'X-RequestDigest': FormDigestValue} \
+                Response=> PermissionResponse
+        END
+        
+        # 4. 發送電子郵件
+        BLOCK '發送通知郵件'
+            # 準備郵件內容
+            SET FolderUrl TO SharePointSiteUrl & '/Shared Documents/' & UserName
+            SET PersonalizedEmailBody TO EmailBody
+            Text.Replace Text: PersonalizedEmailBody TextToFind: '{UserName}' TextToReplace: UserName ReplacedText=> PersonalizedEmailBody
+            Text.Replace Text: PersonalizedEmailBody TextToFind: '{FolderUrl}' TextToReplace: FolderUrl ReplacedText=> PersonalizedEmailBody
+            
+            # 使用 Outlook 發送郵件
+            Outlook.Launch Instance=> OutlookInstance
+            Outlook.SendEmail Instance: OutlookInstance \
+                Account: '你的郵件帳號@組織.com' \
+                To: UserName & '@你的組織.com' \
+                Subject: EmailSubject \
+                Body: PersonalizedEmailBody \
+                IsBodyHtml: False
+        END
+        
+        # 記錄成功
+        Text.AppendLine Text: 'Successfully processed folder for user: ' & UserName File: 'C:\SharePointSharingLog.txt'
+        
+        # 避免太快，加個延遲
+        WAIT 2
+    END
+    
+    # 關閉 Outlook
+    Outlook.Close Instance: OutlookInstance
+    
+    # 顯示完成訊息
+    Display.ShowMessage Title: '處理完成' \
+        Message: '所有資料夾已成功分享並發送郵件通知！' \
+        Icon: Display.Icon.Information \
+        Buttons: Display.Buttons.OK
+END
