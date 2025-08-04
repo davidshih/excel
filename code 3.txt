@@ -1,156 +1,153 @@
-這就為您獻上改良版流程中，每個核心動作的「程式碼檢視」(Code View) 內容。您可以直接複製這些程式碼片段，或者用來比對、除錯自己的流程設定。
-一、雲端流程 (Cloud Flow) 的程式碼檢視
-1. 觸發器：手動觸發流程 (Manually trigger a flow)
-這是整個流程的起點，定義了需要從桌面流程接收的三個參數。
-Generated json
 {
-    "kind": "Http",
-    "inputs": {
-        "schema": {
-            "type": "object",
-            "properties": {
-                "text": {
-                    "title": "siteUrl", // 註解：對應 SharePoint 網站網址
-                    "type": "string",
-                    "description": "Please enter a value for siteUrl"
-                },
-                "text_1": {
-                    "title": "libraryName", // 註解：對應文件庫名稱
-                    "type": "string",
-                    "description": "Please enter a value for libraryName"
-                },
-                "text_2": {
-                    "title": "parentFolderPath", // 註解：對應父資料夾路徑 (可為空)
-                    "type": "string",
-                    "description": "Please enter a value for parentFolderPath"
-                }
-            },
-            "required": [
-                "text",
-                "text_1"
-            ]
-        }
-    }
-}
-Use code with caution.
-Json
-2. 動作：列出資料夾內容 (List folder contents)
-這個動作負責撈取指定路徑下的所有項目，並開啟了分頁功能。
-Generated json
-{
-    "runAfter": {},
-    "type": "ApiConnection",
-    "inputs": {
+  "schemaVersion": "1.0.0.0",
+  "actions": {
+    "Get_all_user_subfolders": {
+      "type": "OpenApiConnection",
+      "inputs": {
         "host": {
-            "connection": {
-                "name": "@providers('Microsoft.PowerApps/apis/shared_sharepointonline')"
-            }
+          "connectionName": "shared_sharepointonline",
+          "operationId": "GetFiles_V2",
+          "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
         },
-        "method": "get",
-        // 註解：下面這段 path 是重點，它會用表達式組合出正確的 SharePoint API 路徑
-        "path": "/datasets/@{encodeURIComponent(encodeURIComponent(triggerBody()['text']))}/foldersv2/@{encodeURIComponent(if(equals(triggerBody()['text_2'], ''), concat('/', triggerBody()['text_1']), concat('/', triggerBody()['text_1'], '/', triggerBody()['text_2'])))}",
-        "queries": {
-            // 註解：這裡就是設定分頁的地方，臨界值設為 5000
-            "$top": 5000 
-        }
-    }
-}
-Use code with caution.
-Json
-3. 迴圈及條件判斷 (Apply_to_each & Condition)
-這部分程式碼檢視會比較巢狀，外層是 Apply_to_each，內層是 Condition。
-Generated json
-{
-    // 註解：迴圈的目標是上一步 "列出資料夾內容" 的 body/value
-    "foreach": "@outputs('列出資料夾內容')?['body/value']",
-    "actions": {
-        "Condition": {
-            "type": "If",
-            // 註解：判斷式，檢查 IsFolder 是否為 true
-            "expression": "@equals(items('Apply_to_each')?['IsFolder'], true)",
-            // 註解：如果為 true，則執行下面的 actions
-            "actions": {
-                // ... (授與權限 & 寄信的動作會放在這裡) ...
-            }
-        }
-    }
-}
-Use code with caution.
-Json
-4. 動作 (在條件內)：授與項目或資料夾的存取權 (Grant access)
-這是實際執行分享的動作。
-Generated json
-{
-    "runAfter": {},
-    "type": "ApiConnection",
-    "inputs": {
-        "host": {
-            "connection": {
-                "name": "@providers('Microsoft.PowerApps/apis/shared_sharepointonline')"
-            }
+        "parameters": {
+          "dataset": "_PLACEHOLDER_YOUR_SHAREPOINT_SITE_URL_",
+          "table": "_PLACEHOLDER_YOUR_DOCUMENT_LIBRARY_GUID_",
+          "folderPath": "_PLACEHOLDER_YOUR_PARENT_FOLDER_PATH_",
+          "filter": "FSObjType eq 1"
         },
-        "method": "post",
-        "path": "/datasets/@{encodeURIComponent(encodeURIComponent(triggerBody()['text']))}/tables/@{encodeURIComponent(triggerBody()['text_1'])}/items/@{encodeURIComponent(items('Apply_to_each')?['ID'])}/share",
-        "body": {
-            // 註解：將資料夾名稱與公司網域組合，並指定角色為 'Write' (可編輯)
-            "recipients": "[{\"email\":\"@{items('Apply_to_each')?['Name']}@{'.yourcompany.com'}\"}]",
-            "role": "Write",
-            "notify": false // 註解：不使用內建通知
+        "authentication": {
+          "type": "Raw",
+          "value": "@json(decodeBase64(triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']"
         }
-    }
-}
-Use code with caution.
-Json
-注意： 請務必將 @{'.yourcompany.com'} 中的 .yourcompany.com 換成貴公司的真實郵件網域。
-5. 動作 (在條件內)：傳送電子郵件 (V2) (Send an email)
-這是寄送客製化通知信的動作。
-Generated json
-{
-    "runAfter": {
-        "Grant_access_to_an_item_or_a_folder": [
-            "Succeeded"
-        ]
+      },
+      "runAfter": {}
     },
-    "type": "ApiConnection",
-    "inputs": {
-        "host": {
-            "connection": {
-                "name": "@providers('Microsoft.PowerApps/apis/shared_office365')"
+    "Apply_to_each_folder": {
+      "type": "foreach",
+      "foreach": "@outputs('Get_all_user_subfolders')?['body/value']",
+      "actions": {
+        "Search_for_user_by_folder_name": {
+          "type": "OpenApiConnection",
+          "inputs": {
+            "host": {
+              "connectionName": "shared_office365users",
+              "operationId": "SearchUser_V2",
+              "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365users"
+            },
+            "parameters": {
+              "search": "@items('Apply_to_each_folder')?['Name']"
+            },
+            "authentication": {
+              "type": "Raw",
+              "value": "@json(decodeBase64(triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']"
             }
+          },
+          "runAfter": {}
         },
-        "method": "post",
-        "path": "/v2/Mail",
-        "body": {
-            // 註解：收件者同樣是組合後的 Email
-            "To": "@{items('Apply_to_each')?['Name']}@{'.yourcompany.com'}",
-            "Subject": "[自動通知] 已為您開放「@{items('Apply_to_each')?['Name']}」資料夾權限",
-            // 註解：使用 {Link to item} 來取得最正確的連結
-            "Body": "您好，<br><br>系統已將資料夾「<b>@{items('Apply_to_each')?['Name']}</b>」的「編輯」權限授予給您。<br><br>您可以點擊此連結直接開啟：<a href=\"@{items('Apply_to_each')?['{Link to item}']}\">點我開啟專屬資料夾</a><br><br>此為系統自動發送郵件，若有疑問請直接回覆，謝謝！",
-            "IsHtml": true
+        "Check_if_exactly_one_user_was_found": {
+          "type": "If",
+          "expression": {
+            "equals": [
+              "@length(outputs('Search_for_user_by_folder_name')?['body/value'])",
+              1
+            ]
+          },
+          "actions": {
+            "Apply_to_each_found_user": {
+              "type": "foreach",
+              "foreach": "@outputs('Search_for_user_by_folder_name')?['body/value']",
+              "actions": {
+                "Share_folder_with_the_found_user": {
+                  "type": "OpenApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connectionName": "shared_sharepointonline",
+                      "operationId": "GrantAccessToAnItemOrAFolder",
+                      "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+                    },
+                    "parameters": {
+                      "dataset": "_PLACEHOLDER_YOUR_SHAREPOINT_SITE_URL_",
+                      "table": "_PLACEHOLDER_YOUR_DOCUMENT_LIBRARY_GUID_",
+                      "id": "@items('Apply_to_each_folder')?['ID']",
+                      "recipients": "@items('Apply_to_each_found_user')?['Mail']",
+                      "role": "Editor",
+                      "message": "Your personal folder has been set up and shared with you.",
+                      "notify": true
+                    },
+                    "authentication": {
+                      "type": "Raw",
+                      "value": "@json(decodeBase64(triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']"
+                    }
+                  },
+                  "runAfter": {}
+                }
+              },
+              "runAfter": {}
+            }
+          },
+          "else": {
+            "actions": {
+              "Send_failure_notification_email": {
+                "type": "OpenApiConnection",
+                "inputs": {
+                  "host": {
+                    "connectionName": "shared_office365",
+                    "operationId": "SendEmailV2",
+                    "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+                  },
+                  "parameters": {
+                    "emailMessage/To": "_PLACEHOLDER_YOUR_ADMIN_EMAIL_ADDRESS_",
+                    "emailMessage/Subject": "[Flow Alert] Failed to share folder: @{items('Apply_to_each_folder')?['Name']}",
+                    "emailMessage/Body": "<p>The Power Automate flow encountered an issue while processing a folder.<br>\n<br>\n<b>Folder Name:</b> @{items('Apply_to_each_folder')?['Name']}<br>\n<b>Reason:</b> The flow could not find exactly one matching user for this folder name. It found @{length(outputs('Search_for_user_by_folder_name')?['body/value'])} user(s).<br>\n<br>\nPlease manually check the folder name and share the permissions.</p>"
+                  },
+                  "authentication": {
+                    "type": "Raw",
+                    "value": "@json(decodeBase64(triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']"
+                  }
+                },
+                "runAfter": {}
+              }
+            }
+          },
+          "runAfter": {
+            "Search_for_user_by_folder_name": [
+              "Succeeded"
+            ]
+          }
         }
+      },
+      "runAfter": {
+        "Get_all_user_subfolders": [
+          "Succeeded"
+        ]
+      }
     }
+  },
+  "outputs": {},
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {}
+      }
+    }
+  },
+  "connectorReferences": {
+    "shared_sharepointonline": {
+      "connection": {
+        "id": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline/connections/shared-sharepointonl-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    },
+    "shared_office365users": {
+      "connection": {
+        "id": "/providers/Microsoft.PowerApps/apis/shared_office365users/connections/shared-office365us-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    },
+    "shared_office365": {
+      "connection": {
+        "id": "/providers/Microsoft.PowerApps/apis/shared_office365/connections/shared-office365-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      }
+    }
+  }
 }
-Use code with caution.
-Json
-二、桌面流程 (Desktop Flow) 的程式碼檢視
-桌面流程的程式碼不是 JSON，而是一種腳本語言。這裡用文字描述其設定。
-1. & 2. & 3. 顯示輸入對話方塊 (Display input dialog)
-這三個動作的程式碼格式類似：
-Generated code
-Display.InputDialog Title: "SharePoint 網站 URL" Message: "請輸入完整 Site URL..." IsTopMost: False DefaultValue: "" ButtonPressed=>ButtonPressed Input=>SiteUrl
-Display.InputDialog Title: "文件庫名稱" Message: "請輸入文件庫名稱..." IsTopMost: False DefaultValue: "" ButtonPressed=>ButtonPressed Input=>LibraryName
-Display.InputDialog Title: "父資料夾路徑 (可留空)" Message: "若要指定子資料夾..." IsTopMost: False DefaultValue: "" ButtonPressed=>ButtonPressed Input=>ParentFolderPath
-Use code with caution.
-4. 執行用 Power Automate 建立的流程 (Run a flow built with Power Automate)
-這是最關鍵的動作，它負責安全地呼叫雲端流程。
-Generated code
-Flow.RunFlow RunMode: Flow.RunMode.FireAndForget FlowId: "YOUR-CLOUD-FLOW-GUID" InputArguments: $'''{
-  "text": "%SiteUrl%",
-  "text_1": "%LibraryName%",
-  "text_2": "%ParentFolderPath%"
-}'''
-Use code with caution.
-注意：
-FlowId 這裡會是您雲端流程的唯一識別碼 (GUID)，在您選擇流程後會自動填入。
-InputArguments 中的 text, text_1, text_2 必須與雲端流程觸發器中定義的 ID 完全一致。
-把這些 code view 內容當作是武功祕笈，當您遇到流程行為不如預期時，直接打開來比對一下，通常就能找到問題所在。祝您使用愉快！
