@@ -1,0 +1,40 @@
+%%{
+  init: {
+    'theme': 'base',
+    'themeVariables': {
+      'primaryColor': '#F4F4F4',
+      'primaryTextColor': '#212121',
+      'lineColor': '#555',
+      'secondaryColor': '#B0C4DE',
+      'tertiaryColor': '#FFFFFF'
+    }
+  }
+}%%
+graph TD
+    subgraph A[標準流程 - Standard Workflow (PAM Available)]
+        A1(事件發生<br>需要緊急存取<br>[IT Ops]) --> A2{透過 PAM 系統<br>提交申請單<br>[Requestor]};
+        A2 --> A3(審批存取請求<br>[InfoSec]);
+        A3 -- 核准 --> A4(透過 PAM<br>取得 JIT 存取權<br>[Requestor]);
+        A3 -- 拒絕 --> A5(流程終止);
+        A4 --> Z1;
+    end
+
+    subgraph B[災難流程 - Disaster Workflow (PAM Unavailable)]
+        B1(重大災難<br>PAM 無法使用<br>[Leadership/InfoSec]) --> B2{填寫紙本/緊急表單<br>[Requestor]};
+        B2 --> B3(雙主管聯合審批<br>(e.g., CISO + IT Director)<br>[Leadership]);
+        B3 -- 核准 --> B4(共同前往實體保險箱<br>取出密封密碼<br>[Leadership]);
+        B4 --> B5(監督下<br>手動登入操作<br>[Requestor/InfoSec]);
+        B3 -- 拒絕 --> B6(流程終止);
+        B5 --> Z1;
+    end
+
+    Z1(執行必要任務<br>[Requestor/IT Ops]) --> Z2((SIEM 即時告警<br>登入成功事件<br>[SOC/SIEM]));
+    Z2 --> Z3{任務完成<br>立即重設密碼<br>[IT Ops]};
+    Z3 --> Z4(召開 eCAB<br>進行事後審查<br>[eCAB]);
+    Z4 --> Z5(產出稽核報告<br>存檔備查<br>[InfoSec]);
+
+
+    style A1 fill:#FFDDC1,stroke:#333,stroke-width:2px
+    style B1 fill:#FFB3B3,stroke:#333,stroke-width:2px,font-weight:bold
+    style Z2 fill:#FFFFB3,stroke:#333,stroke-width:2px
+    style Z4 fill:#C1FFC1,stroke:#333,stroke-width:2px

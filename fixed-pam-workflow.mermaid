@@ -1,0 +1,58 @@
+%%{
+  init: {
+    'theme': 'base',
+    'themeVariables': {
+      'primaryColor': '#F4F4F4',
+      'primaryTextColor': '#212121',
+      'lineColor': '#555',
+      'secondaryColor': '#B0C4DE',
+      'tertiaryColor': '#FFFFFF'
+    }
+  }
+}%%
+graph TD
+    subgraph A["Standard Workflow (PAM Available)"]
+        A1["Incident Occurs<br/>Emergency Access Needed<br/>[IT Ops]"]
+        A2{"Submit Request<br/>via PAM System<br/>[Requestor]"}
+        A3["Approve Access Request<br/>[InfoSec]"]
+        A4["Get JIT Access<br/>via PAM<br/>[Requestor]"]
+        A5["Process Ends"]
+        
+        A1 --> A2
+        A2 --> A3
+        A3 -->|Approved| A4
+        A3 -->|Denied| A5
+    end
+    
+    subgraph B["Disaster Workflow (PAM Unavailable)"]
+        B1["Major Disaster<br/>PAM is Down<br/>[Leadership/InfoSec]"]
+        B2{"Fill Out<br/>Emergency Form<br/>[Requestor]"}
+        B3["Dual-Executive Approval<br/>(e.g., CISO + IT Director)<br/>[Leadership]"]
+        B4["Retrieve Sealed Password<br/>from Physical Safe<br/>[Leadership]"]
+        B5["Perform Manual Login<br/>Under Supervision<br/>[Requestor/InfoSec]"]
+        B6["Process Ends"]
+        
+        B1 --> B2
+        B2 --> B3
+        B3 -->|Approved| B4
+        B3 -->|Denied| B6
+        B4 --> B5
+    end
+    
+    Z1["Execute Necessary Tasks<br/>[Requestor/IT Ops]"]
+    Z2(("SIEM Alert Triggered<br/>on Successful Login<br/>[SOC/SIEM]"))
+    Z3{"Task Complete<br/>Reset Password Immediately<br/>[IT Ops]"}
+    Z4["Convene eCAB<br/>for Post-Incident Review<br/>[eCAB]"]
+    Z5["Generate Audit Report<br/>and Archive<br/>[InfoSec]"]
+    
+    A4 --> Z1
+    B5 --> Z1
+    Z1 --> Z2
+    Z2 --> Z3
+    Z3 --> Z4
+    Z4 --> Z5
+    
+    style A1 fill:#FFDDC1,stroke:#333,stroke-width:2px
+    style B1 fill:#FFB3B3,stroke:#333,stroke-width:2px,font-weight:bold
+    style Z2 fill:#FFFFB3,stroke:#333,stroke-width:2px
+    style Z4 fill:#C1FFC1,stroke:#333,stroke-width:2px
